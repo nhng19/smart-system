@@ -1,0 +1,2834 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0B1220">
+<title>GN-FM · 스마트 시설관리</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<script>
+/* 오프라인 QR 엔진 — MIT (c) 2009 Kazuhiko Arase */
+(function(){
+var QRMode = {
+    MODE_NUMBER :       1 << 0,
+    MODE_ALPHA_NUM :    1 << 1,
+    MODE_8BIT_BYTE :    1 << 2,
+    MODE_KANJI :        1 << 3
+};
+var QRErrorCorrectLevel = {
+	L : 1,
+	M : 0,
+	Q : 3,
+	H : 2
+};
+var QRMaskPattern = {
+	PATTERN000 : 0,
+	PATTERN001 : 1,
+	PATTERN010 : 2,
+	PATTERN011 : 3,
+	PATTERN100 : 4,
+	PATTERN101 : 5,
+	PATTERN110 : 6,
+	PATTERN111 : 7
+};
+var QRMath = {
+	glog : function(n) {
+		if (n < 1) {
+			throw new Error("glog(" + n + ")");
+		}
+		return QRMath.LOG_TABLE[n];
+	},
+	gexp : function(n) {
+		while (n < 0) {
+			n += 255;
+		}
+		while (n >= 256) {
+			n -= 255;
+		}
+		return QRMath.EXP_TABLE[n];
+	},
+	EXP_TABLE : new Array(256),
+	LOG_TABLE : new Array(256)
+};
+for (var i = 0; i < 8; i++) {
+	QRMath.EXP_TABLE[i] = 1 << i;
+}
+for (var i = 8; i < 256; i++) {
+	QRMath.EXP_TABLE[i] = QRMath.EXP_TABLE[i - 4]
+		^ QRMath.EXP_TABLE[i - 5]
+		^ QRMath.EXP_TABLE[i - 6]
+		^ QRMath.EXP_TABLE[i - 8];
+}
+for (var i = 0; i < 255; i++) {
+	QRMath.LOG_TABLE[QRMath.EXP_TABLE[i] ] = i;
+}
+function QRBitBuffer() {
+	this.buffer = [];
+	this.length = 0;
+}
+QRBitBuffer.prototype = {
+	get : function(index) {
+		var bufIndex = Math.floor(index / 8);
+		return ( (this.buffer[bufIndex] >>> (7 - index % 8) ) & 1) == 1;
+	},
+	put : function(num, length) {
+		for (var i = 0; i < length; i++) {
+			this.putBit( ( (num >>> (length - i - 1) ) & 1) == 1);
+		}
+	},
+	getLengthInBits : function() {
+		return this.length;
+	},
+	putBit : function(bit) {
+		var bufIndex = Math.floor(this.length / 8);
+		if (this.buffer.length <= bufIndex) {
+			this.buffer.push(0);
+		}
+		if (bit) {
+			this.buffer[bufIndex] |= (0x80 >>> (this.length % 8) );
+		}
+		this.length++;
+	}
+};
+function QR8bitByte(data) {
+	this.mode = QRMode.MODE_8BIT_BYTE;
+	this.data = data;
+}
+QR8bitByte.prototype = {
+	getLength : function() {
+		return this.data.length;
+	},
+	write : function(buffer) {
+		for (var i = 0; i < this.data.length; i++) {
+			// not JIS ...
+			buffer.put(this.data.charCodeAt(i), 8);
+		}
+	}
+};
+function QRPolynomial(num, shift) {
+	if (num.length === undefined) {
+		throw new Error(num.length + "/" + shift);
+	}
+	var offset = 0;
+	while (offset < num.length && num[offset] === 0) {
+		offset++;
+	}
+	this.num = new Array(num.length - offset + shift);
+	for (var i = 0; i < num.length - offset; i++) {
+		this.num[i] = num[i + offset];
+	}
+}
+QRPolynomial.prototype = {
+	get : function(index) {
+		return this.num[index];
+	},
+	getLength : function() {
+		return this.num.length;
+	},
+	multiply : function(e) {
+		var num = new Array(this.getLength() + e.getLength() - 1);
+		for (var i = 0; i < this.getLength(); i++) {
+			for (var j = 0; j < e.getLength(); j++) {
+				num[i + j] ^= QRMath.gexp(QRMath.glog(this.get(i) ) + QRMath.glog(e.get(j) ) );
+			}
+		}
+		return new QRPolynomial(num, 0);
+	},
+	mod : function(e) {
+		if (this.getLength() - e.getLength() < 0) {
+			return this;
+		}
+		var ratio = QRMath.glog(this.get(0) ) - QRMath.glog(e.get(0) );
+		var num = new Array(this.getLength() );
+		for (var i = 0; i < this.getLength(); i++) {
+			num[i] = this.get(i);
+		}
+		for (var x = 0; x < e.getLength(); x++) {
+			num[x] ^= QRMath.gexp(QRMath.glog(e.get(x) ) + ratio);
+		}
+		// recursive call
+		return new QRPolynomial(num, 0).mod(e);
+	}
+};
+function QRRSBlock(totalCount, dataCount) {
+	this.totalCount = totalCount;
+	this.dataCount  = dataCount;
+}
+QRRSBlock.RS_BLOCK_TABLE = [
+	// L
+	// M
+	// Q
+	// H
+	// 1
+	[1, 26, 19],
+	[1, 26, 16],
+	[1, 26, 13],
+	[1, 26, 9],
+	// 2
+	[1, 44, 34],
+	[1, 44, 28],
+	[1, 44, 22],
+	[1, 44, 16],
+	// 3
+	[1, 70, 55],
+	[1, 70, 44],
+	[2, 35, 17],
+	[2, 35, 13],
+	// 4		
+	[1, 100, 80],
+	[2, 50, 32],
+	[2, 50, 24],
+	[4, 25, 9],
+	// 5
+	[1, 134, 108],
+	[2, 67, 43],
+	[2, 33, 15, 2, 34, 16],
+	[2, 33, 11, 2, 34, 12],
+	// 6
+	[2, 86, 68],
+	[4, 43, 27],
+	[4, 43, 19],
+	[4, 43, 15],
+	// 7		
+	[2, 98, 78],
+	[4, 49, 31],
+	[2, 32, 14, 4, 33, 15],
+	[4, 39, 13, 1, 40, 14],
+	// 8
+	[2, 121, 97],
+	[2, 60, 38, 2, 61, 39],
+	[4, 40, 18, 2, 41, 19],
+	[4, 40, 14, 2, 41, 15],
+	// 9
+	[2, 146, 116],
+	[3, 58, 36, 2, 59, 37],
+	[4, 36, 16, 4, 37, 17],
+	[4, 36, 12, 4, 37, 13],
+	// 10		
+	[2, 86, 68, 2, 87, 69],
+	[4, 69, 43, 1, 70, 44],
+	[6, 43, 19, 2, 44, 20],
+	[6, 43, 15, 2, 44, 16],
+	// 11
+	[4, 101, 81],
+	[1, 80, 50, 4, 81, 51],
+	[4, 50, 22, 4, 51, 23],
+	[3, 36, 12, 8, 37, 13],
+	// 12
+	[2, 116, 92, 2, 117, 93],
+	[6, 58, 36, 2, 59, 37],
+	[4, 46, 20, 6, 47, 21],
+	[7, 42, 14, 4, 43, 15],
+	// 13
+	[4, 133, 107],
+	[8, 59, 37, 1, 60, 38],
+	[8, 44, 20, 4, 45, 21],
+	[12, 33, 11, 4, 34, 12],
+	// 14
+	[3, 145, 115, 1, 146, 116],
+	[4, 64, 40, 5, 65, 41],
+	[11, 36, 16, 5, 37, 17],
+	[11, 36, 12, 5, 37, 13],
+	// 15
+	[5, 109, 87, 1, 110, 88],
+	[5, 65, 41, 5, 66, 42],
+	[5, 54, 24, 7, 55, 25],
+	[11, 36, 12],
+	// 16
+	[5, 122, 98, 1, 123, 99],
+	[7, 73, 45, 3, 74, 46],
+	[15, 43, 19, 2, 44, 20],
+	[3, 45, 15, 13, 46, 16],
+	// 17
+	[1, 135, 107, 5, 136, 108],
+	[10, 74, 46, 1, 75, 47],
+	[1, 50, 22, 15, 51, 23],
+	[2, 42, 14, 17, 43, 15],
+	// 18
+	[5, 150, 120, 1, 151, 121],
+	[9, 69, 43, 4, 70, 44],
+	[17, 50, 22, 1, 51, 23],
+	[2, 42, 14, 19, 43, 15],
+	// 19
+	[3, 141, 113, 4, 142, 114],
+	[3, 70, 44, 11, 71, 45],
+	[17, 47, 21, 4, 48, 22],
+	[9, 39, 13, 16, 40, 14],
+	// 20
+	[3, 135, 107, 5, 136, 108],
+	[3, 67, 41, 13, 68, 42],
+	[15, 54, 24, 5, 55, 25],
+	[15, 43, 15, 10, 44, 16],
+	// 21
+	[4, 144, 116, 4, 145, 117],
+	[17, 68, 42],
+	[17, 50, 22, 6, 51, 23],
+	[19, 46, 16, 6, 47, 17],
+	// 22
+	[2, 139, 111, 7, 140, 112],
+	[17, 74, 46],
+	[7, 54, 24, 16, 55, 25],
+	[34, 37, 13],
+	// 23
+	[4, 151, 121, 5, 152, 122],
+	[4, 75, 47, 14, 76, 48],
+	[11, 54, 24, 14, 55, 25],
+	[16, 45, 15, 14, 46, 16],
+	// 24
+	[6, 147, 117, 4, 148, 118],
+	[6, 73, 45, 14, 74, 46],
+	[11, 54, 24, 16, 55, 25],
+	[30, 46, 16, 2, 47, 17],
+	// 25
+	[8, 132, 106, 4, 133, 107],
+	[8, 75, 47, 13, 76, 48],
+	[7, 54, 24, 22, 55, 25],
+	[22, 45, 15, 13, 46, 16],
+	// 26
+	[10, 142, 114, 2, 143, 115],
+	[19, 74, 46, 4, 75, 47],
+	[28, 50, 22, 6, 51, 23],
+	[33, 46, 16, 4, 47, 17],
+	// 27
+	[8, 152, 122, 4, 153, 123],
+	[22, 73, 45, 3, 74, 46],
+	[8, 53, 23, 26, 54, 24],
+	[12, 45, 15, 28, 46, 16],
+	// 28
+	[3, 147, 117, 10, 148, 118],
+	[3, 73, 45, 23, 74, 46],
+	[4, 54, 24, 31, 55, 25],
+	[11, 45, 15, 31, 46, 16],
+	// 29
+	[7, 146, 116, 7, 147, 117],
+	[21, 73, 45, 7, 74, 46],
+	[1, 53, 23, 37, 54, 24],
+	[19, 45, 15, 26, 46, 16],
+	// 30
+	[5, 145, 115, 10, 146, 116],
+	[19, 75, 47, 10, 76, 48],
+	[15, 54, 24, 25, 55, 25],
+	[23, 45, 15, 25, 46, 16],
+	// 31
+	[13, 145, 115, 3, 146, 116],
+	[2, 74, 46, 29, 75, 47],
+	[42, 54, 24, 1, 55, 25],
+	[23, 45, 15, 28, 46, 16],
+	// 32
+	[17, 145, 115],
+	[10, 74, 46, 23, 75, 47],
+	[10, 54, 24, 35, 55, 25],
+	[19, 45, 15, 35, 46, 16],
+	// 33
+	[17, 145, 115, 1, 146, 116],
+	[14, 74, 46, 21, 75, 47],
+	[29, 54, 24, 19, 55, 25],
+	[11, 45, 15, 46, 46, 16],
+	// 34
+	[13, 145, 115, 6, 146, 116],
+	[14, 74, 46, 23, 75, 47],
+	[44, 54, 24, 7, 55, 25],
+	[59, 46, 16, 1, 47, 17],
+	// 35
+	[12, 151, 121, 7, 152, 122],
+	[12, 75, 47, 26, 76, 48],
+	[39, 54, 24, 14, 55, 25],
+	[22, 45, 15, 41, 46, 16],
+	// 36
+	[6, 151, 121, 14, 152, 122],
+	[6, 75, 47, 34, 76, 48],
+	[46, 54, 24, 10, 55, 25],
+	[2, 45, 15, 64, 46, 16],
+	// 37
+	[17, 152, 122, 4, 153, 123],
+	[29, 74, 46, 14, 75, 47],
+	[49, 54, 24, 10, 55, 25],
+	[24, 45, 15, 46, 46, 16],
+	// 38
+	[4, 152, 122, 18, 153, 123],
+	[13, 74, 46, 32, 75, 47],
+	[48, 54, 24, 14, 55, 25],
+	[42, 45, 15, 32, 46, 16],
+	// 39
+	[20, 147, 117, 4, 148, 118],
+	[40, 75, 47, 7, 76, 48],
+	[43, 54, 24, 22, 55, 25],
+	[10, 45, 15, 67, 46, 16],
+	// 40
+	[19, 148, 118, 6, 149, 119],
+	[18, 75, 47, 31, 76, 48],
+	[34, 54, 24, 34, 55, 25],
+	[20, 45, 15, 61, 46, 16]
+];
+QRRSBlock.getRSBlocks = function(typeNumber, errorCorrectLevel) {
+	var rsBlock = QRRSBlock.getRsBlockTable(typeNumber, errorCorrectLevel);
+	if (rsBlock === undefined) {
+		throw new Error("bad rs block @ typeNumber:" + typeNumber + "/errorCorrectLevel:" + errorCorrectLevel);
+	}
+	var length = rsBlock.length / 3;
+	var list = [];
+	for (var i = 0; i < length; i++) {
+		var count = rsBlock[i * 3 + 0];
+		var totalCount = rsBlock[i * 3 + 1];
+		var dataCount  = rsBlock[i * 3 + 2];
+		for (var j = 0; j < count; j++) {
+			list.push(new QRRSBlock(totalCount, dataCount) );	
+		}
+	}
+	return list;
+};
+QRRSBlock.getRsBlockTable = function(typeNumber, errorCorrectLevel) {
+	switch(errorCorrectLevel) {
+	case QRErrorCorrectLevel.L :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 0];
+	case QRErrorCorrectLevel.M :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 1];
+	case QRErrorCorrectLevel.Q :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 2];
+	case QRErrorCorrectLevel.H :
+		return QRRSBlock.RS_BLOCK_TABLE[(typeNumber - 1) * 4 + 3];
+	default :
+		return undefined;
+	}
+};
+var QRUtil = {
+    PATTERN_POSITION_TABLE : [
+        [],
+        [6, 18],
+        [6, 22],
+        [6, 26],
+        [6, 30],
+        [6, 34],
+        [6, 22, 38],
+        [6, 24, 42],
+        [6, 26, 46],
+        [6, 28, 50],
+        [6, 30, 54],        
+        [6, 32, 58],
+        [6, 34, 62],
+        [6, 26, 46, 66],
+        [6, 26, 48, 70],
+        [6, 26, 50, 74],
+        [6, 30, 54, 78],
+        [6, 30, 56, 82],
+        [6, 30, 58, 86],
+        [6, 34, 62, 90],
+        [6, 28, 50, 72, 94],
+        [6, 26, 50, 74, 98],
+        [6, 30, 54, 78, 102],
+        [6, 28, 54, 80, 106],
+        [6, 32, 58, 84, 110],
+        [6, 30, 58, 86, 114],
+        [6, 34, 62, 90, 118],
+        [6, 26, 50, 74, 98, 122],
+        [6, 30, 54, 78, 102, 126],
+        [6, 26, 52, 78, 104, 130],
+        [6, 30, 56, 82, 108, 134],
+        [6, 34, 60, 86, 112, 138],
+        [6, 30, 58, 86, 114, 142],
+        [6, 34, 62, 90, 118, 146],
+        [6, 30, 54, 78, 102, 126, 150],
+        [6, 24, 50, 76, 102, 128, 154],
+        [6, 28, 54, 80, 106, 132, 158],
+        [6, 32, 58, 84, 110, 136, 162],
+        [6, 26, 54, 82, 110, 138, 166],
+        [6, 30, 58, 86, 114, 142, 170]
+    ],
+    G15 : (1 << 10) | (1 << 8) | (1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | (1 << 0),
+    G18 : (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | (1 << 8) | (1 << 5) | (1 << 2) | (1 << 0),
+    G15_MASK : (1 << 14) | (1 << 12) | (1 << 10)    | (1 << 4) | (1 << 1),
+    getBCHTypeInfo : function(data) {
+        var d = data << 10;
+        while (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G15) >= 0) {
+            d ^= (QRUtil.G15 << (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G15) ) );    
+        }
+        return ( (data << 10) | d) ^ QRUtil.G15_MASK;
+    },
+    getBCHTypeNumber : function(data) {
+        var d = data << 12;
+        while (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G18) >= 0) {
+            d ^= (QRUtil.G18 << (QRUtil.getBCHDigit(d) - QRUtil.getBCHDigit(QRUtil.G18) ) );    
+        }
+        return (data << 12) | d;
+    },
+    getBCHDigit : function(data) {
+        var digit = 0;
+        while (data !== 0) {
+            digit++;
+            data >>>= 1;
+        }
+        return digit;
+    },
+    getPatternPosition : function(typeNumber) {
+        return QRUtil.PATTERN_POSITION_TABLE[typeNumber - 1];
+    },
+    getMask : function(maskPattern, i, j) {
+        switch (maskPattern) {
+        case QRMaskPattern.PATTERN000 : return (i + j) % 2 === 0;
+        case QRMaskPattern.PATTERN001 : return i % 2 === 0;
+        case QRMaskPattern.PATTERN010 : return j % 3 === 0;
+        case QRMaskPattern.PATTERN011 : return (i + j) % 3 === 0;
+        case QRMaskPattern.PATTERN100 : return (Math.floor(i / 2) + Math.floor(j / 3) ) % 2 === 0;
+        case QRMaskPattern.PATTERN101 : return (i * j) % 2 + (i * j) % 3 === 0;
+        case QRMaskPattern.PATTERN110 : return ( (i * j) % 2 + (i * j) % 3) % 2 === 0;
+        case QRMaskPattern.PATTERN111 : return ( (i * j) % 3 + (i + j) % 2) % 2 === 0;
+        default :
+            throw new Error("bad maskPattern:" + maskPattern);
+        }
+    },
+    getErrorCorrectPolynomial : function(errorCorrectLength) {
+        var a = new QRPolynomial([1], 0);
+        for (var i = 0; i < errorCorrectLength; i++) {
+            a = a.multiply(new QRPolynomial([1, QRMath.gexp(i)], 0) );
+        }
+        return a;
+    },
+    getLengthInBits : function(mode, type) {
+        if (1 <= type && type < 10) {
+            // 1 - 9
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 10;
+            case QRMode.MODE_ALPHA_NUM  : return 9;
+            case QRMode.MODE_8BIT_BYTE  : return 8;
+            case QRMode.MODE_KANJI      : return 8;
+            default :
+                throw new Error("mode:" + mode);
+            }
+        } else if (type < 27) {
+            // 10 - 26
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 12;
+            case QRMode.MODE_ALPHA_NUM  : return 11;
+            case QRMode.MODE_8BIT_BYTE  : return 16;
+            case QRMode.MODE_KANJI      : return 10;
+            default :
+                throw new Error("mode:" + mode);
+            }
+        } else if (type < 41) {
+            // 27 - 40
+            switch(mode) {
+            case QRMode.MODE_NUMBER     : return 14;
+            case QRMode.MODE_ALPHA_NUM  : return 13;
+            case QRMode.MODE_8BIT_BYTE  : return 16;
+            case QRMode.MODE_KANJI      : return 12;
+            default :
+                throw new Error("mode:" + mode);
+            }
+        } else {
+            throw new Error("type:" + type);
+        }
+    },
+    getLostPoint : function(qrCode) {
+        var moduleCount = qrCode.getModuleCount();
+        var lostPoint = 0;
+        var row = 0; 
+        var col = 0;
+        // LEVEL1
+        for (row = 0; row < moduleCount; row++) {
+            for (col = 0; col < moduleCount; col++) {
+                var sameCount = 0;
+                var dark = qrCode.isDark(row, col);
+                for (var r = -1; r <= 1; r++) {
+                    if (row + r < 0 || moduleCount <= row + r) {
+                        continue;
+                    }
+                    for (var c = -1; c <= 1; c++) {
+                        if (col + c < 0 || moduleCount <= col + c) {
+                            continue;
+                        }
+                        if (r === 0 && c === 0) {
+                            continue;
+                        }
+                        if (dark === qrCode.isDark(row + r, col + c) ) {
+                            sameCount++;
+                        }
+                    }
+                }
+                if (sameCount > 5) {
+                    lostPoint += (3 + sameCount - 5);
+                }
+            }
+        }
+        // LEVEL2
+        for (row = 0; row < moduleCount - 1; row++) {
+            for (col = 0; col < moduleCount - 1; col++) {
+                var count = 0;
+                if (qrCode.isDark(row,     col    ) ) count++;
+                if (qrCode.isDark(row + 1, col    ) ) count++;
+                if (qrCode.isDark(row,     col + 1) ) count++;
+                if (qrCode.isDark(row + 1, col + 1) ) count++;
+                if (count === 0 || count === 4) {
+                    lostPoint += 3;
+                }
+            }
+        }
+        // LEVEL3
+        for (row = 0; row < moduleCount; row++) {
+            for (col = 0; col < moduleCount - 6; col++) {
+                if (qrCode.isDark(row, col) && 
+                        !qrCode.isDark(row, col + 1) && 
+                         qrCode.isDark(row, col + 2) && 
+                         qrCode.isDark(row, col + 3) && 
+                         qrCode.isDark(row, col + 4) && 
+                        !qrCode.isDark(row, col + 5) && 
+                         qrCode.isDark(row, col + 6) ) {
+                    lostPoint += 40;
+                }
+            }
+        }
+        for (col = 0; col < moduleCount; col++) {
+            for (row = 0; row < moduleCount - 6; row++) {
+                if (qrCode.isDark(row, col) &&
+                        !qrCode.isDark(row + 1, col) &&
+                         qrCode.isDark(row + 2, col) &&
+                         qrCode.isDark(row + 3, col) &&
+                         qrCode.isDark(row + 4, col) &&
+                        !qrCode.isDark(row + 5, col) &&
+                         qrCode.isDark(row + 6, col) ) {
+                    lostPoint += 40;
+                }
+            }
+        }
+        // LEVEL4
+        var darkCount = 0;
+        for (col = 0; col < moduleCount; col++) {
+            for (row = 0; row < moduleCount; row++) {
+                if (qrCode.isDark(row, col) ) {
+                    darkCount++;
+                }
+            }
+        }
+        var ratio = Math.abs(100 * darkCount / moduleCount / moduleCount - 50) / 5;
+        lostPoint += ratio * 10;
+        return lostPoint;       
+    }
+};
+function QRCode(typeNumber, errorCorrectLevel) {
+	this.typeNumber = typeNumber;
+	this.errorCorrectLevel = errorCorrectLevel;
+	this.modules = null;
+	this.moduleCount = 0;
+	this.dataCache = null;
+	this.dataList = [];
+}
+QRCode.prototype = {
+	addData : function(data) {
+		var newData = new QR8bitByte(data);
+		this.dataList.push(newData);
+		this.dataCache = null;
+	},
+	isDark : function(row, col) {
+		if (row < 0 || this.moduleCount <= row || col < 0 || this.moduleCount <= col) {
+			throw new Error(row + "," + col);
+		}
+		return this.modules[row][col];
+	},
+	getModuleCount : function() {
+		return this.moduleCount;
+	},
+	make : function() {
+		// Calculate automatically typeNumber if provided is < 1
+		if (this.typeNumber < 1 ){
+			var typeNumber = 1;
+			for (typeNumber = 1; typeNumber < 40; typeNumber++) {
+				var rsBlocks = QRRSBlock.getRSBlocks(typeNumber, this.errorCorrectLevel);
+				var buffer = new QRBitBuffer();
+				var totalDataCount = 0;
+				for (var i = 0; i < rsBlocks.length; i++) {
+					totalDataCount += rsBlocks[i].dataCount;
+				}
+				for (var x = 0; x < this.dataList.length; x++) {
+					var data = this.dataList[x];
+					buffer.put(data.mode, 4);
+					buffer.put(data.getLength(), QRUtil.getLengthInBits(data.mode, typeNumber) );
+					data.write(buffer);
+				}
+				if (buffer.getLengthInBits() <= totalDataCount * 8)
+					break;
+			}
+			this.typeNumber = typeNumber;
+		}
+		this.makeImpl(false, this.getBestMaskPattern() );
+	},
+	makeImpl : function(test, maskPattern) {
+		this.moduleCount = this.typeNumber * 4 + 17;
+		this.modules = new Array(this.moduleCount);
+		for (var row = 0; row < this.moduleCount; row++) {
+			this.modules[row] = new Array(this.moduleCount);
+			for (var col = 0; col < this.moduleCount; col++) {
+				this.modules[row][col] = null;//(col + row) % 3;
+			}
+		}
+		this.setupPositionProbePattern(0, 0);
+		this.setupPositionProbePattern(this.moduleCount - 7, 0);
+		this.setupPositionProbePattern(0, this.moduleCount - 7);
+		this.setupPositionAdjustPattern();
+		this.setupTimingPattern();
+		this.setupTypeInfo(test, maskPattern);
+		if (this.typeNumber >= 7) {
+			this.setupTypeNumber(test);
+		}
+		if (this.dataCache === null) {
+			this.dataCache = QRCode.createData(this.typeNumber, this.errorCorrectLevel, this.dataList);
+		}
+		this.mapData(this.dataCache, maskPattern);
+	},
+	setupPositionProbePattern : function(row, col)  {
+		for (var r = -1; r <= 7; r++) {
+			if (row + r <= -1 || this.moduleCount <= row + r) continue;
+			for (var c = -1; c <= 7; c++) {
+				if (col + c <= -1 || this.moduleCount <= col + c) continue;
+				if ( (0 <= r && r <= 6 && (c === 0 || c === 6) ) || 
+                     (0 <= c && c <= 6 && (r === 0 || r === 6) ) || 
+                     (2 <= r && r <= 4 && 2 <= c && c <= 4) ) {
+					this.modules[row + r][col + c] = true;
+				} else {
+					this.modules[row + r][col + c] = false;
+				}
+			}		
+		}		
+	},
+	getBestMaskPattern : function() {
+		var minLostPoint = 0;
+		var pattern = 0;
+		for (var i = 0; i < 8; i++) {
+			this.makeImpl(true, i);
+			var lostPoint = QRUtil.getLostPoint(this);
+			if (i === 0 || minLostPoint >  lostPoint) {
+				minLostPoint = lostPoint;
+				pattern = i;
+			}
+		}
+		return pattern;
+	},
+	createMovieClip : function(target_mc, instance_name, depth) {
+		var qr_mc = target_mc.createEmptyMovieClip(instance_name, depth);
+		var cs = 1;
+		this.make();
+		for (var row = 0; row < this.modules.length; row++) {
+			var y = row * cs;
+			for (var col = 0; col < this.modules[row].length; col++) {
+				var x = col * cs;
+				var dark = this.modules[row][col];
+				if (dark) {
+					qr_mc.beginFill(0, 100);
+					qr_mc.moveTo(x, y);
+					qr_mc.lineTo(x + cs, y);
+					qr_mc.lineTo(x + cs, y + cs);
+					qr_mc.lineTo(x, y + cs);
+					qr_mc.endFill();
+				}
+			}
+		}
+		return qr_mc;
+	},
+	setupTimingPattern : function() {
+		for (var r = 8; r < this.moduleCount - 8; r++) {
+			if (this.modules[r][6] !== null) {
+				continue;
+			}
+			this.modules[r][6] = (r % 2 === 0);
+		}
+		for (var c = 8; c < this.moduleCount - 8; c++) {
+			if (this.modules[6][c] !== null) {
+				continue;
+			}
+			this.modules[6][c] = (c % 2 === 0);
+		}
+	},
+	setupPositionAdjustPattern : function() {
+		var pos = QRUtil.getPatternPosition(this.typeNumber);
+		for (var i = 0; i < pos.length; i++) {
+			for (var j = 0; j < pos.length; j++) {
+				var row = pos[i];
+				var col = pos[j];
+				if (this.modules[row][col] !== null) {
+					continue;
+				}
+				for (var r = -2; r <= 2; r++) {
+					for (var c = -2; c <= 2; c++) {
+						if (Math.abs(r) === 2 || 
+                            Math.abs(c) === 2 ||
+                            (r === 0 && c === 0) ) {
+							this.modules[row + r][col + c] = true;
+						} else {
+							this.modules[row + r][col + c] = false;
+						}
+					}
+				}
+			}
+		}
+	},
+	setupTypeNumber : function(test) {
+		var bits = QRUtil.getBCHTypeNumber(this.typeNumber);
+        var mod;
+		for (var i = 0; i < 18; i++) {
+			mod = (!test && ( (bits >> i) & 1) === 1);
+			this.modules[Math.floor(i / 3)][i % 3 + this.moduleCount - 8 - 3] = mod;
+		}
+		for (var x = 0; x < 18; x++) {
+			mod = (!test && ( (bits >> x) & 1) === 1);
+			this.modules[x % 3 + this.moduleCount - 8 - 3][Math.floor(x / 3)] = mod;
+		}
+	},
+	setupTypeInfo : function(test, maskPattern) {
+		var data = (this.errorCorrectLevel << 3) | maskPattern;
+		var bits = QRUtil.getBCHTypeInfo(data);
+        var mod;
+		// vertical		
+		for (var v = 0; v < 15; v++) {
+			mod = (!test && ( (bits >> v) & 1) === 1);
+			if (v < 6) {
+				this.modules[v][8] = mod;
+			} else if (v < 8) {
+				this.modules[v + 1][8] = mod;
+			} else {
+				this.modules[this.moduleCount - 15 + v][8] = mod;
+			}
+		}
+		// horizontal
+		for (var h = 0; h < 15; h++) {
+			mod = (!test && ( (bits >> h) & 1) === 1);
+			if (h < 8) {
+				this.modules[8][this.moduleCount - h - 1] = mod;
+			} else if (h < 9) {
+				this.modules[8][15 - h - 1 + 1] = mod;
+			} else {
+				this.modules[8][15 - h - 1] = mod;
+			}
+		}
+		// fixed module
+		this.modules[this.moduleCount - 8][8] = (!test);
+	},
+	mapData : function(data, maskPattern) {
+		var inc = -1;
+		var row = this.moduleCount - 1;
+		var bitIndex = 7;
+		var byteIndex = 0;
+		for (var col = this.moduleCount - 1; col > 0; col -= 2) {
+			if (col === 6) col--;
+			while (true) {
+				for (var c = 0; c < 2; c++) {
+					if (this.modules[row][col - c] === null) {
+						var dark = false;
+						if (byteIndex < data.length) {
+							dark = ( ( (data[byteIndex] >>> bitIndex) & 1) === 1);
+						}
+						var mask = QRUtil.getMask(maskPattern, row, col - c);
+						if (mask) {
+							dark = !dark;
+						}
+						this.modules[row][col - c] = dark;
+						bitIndex--;
+						if (bitIndex === -1) {
+							byteIndex++;
+							bitIndex = 7;
+						}
+					}
+				}
+				row += inc;
+				if (row < 0 || this.moduleCount <= row) {
+					row -= inc;
+					inc = -inc;
+					break;
+				}
+			}
+		}
+	}
+};
+QRCode.PAD0 = 0xEC;
+QRCode.PAD1 = 0x11;
+QRCode.createData = function(typeNumber, errorCorrectLevel, dataList) {
+	var rsBlocks = QRRSBlock.getRSBlocks(typeNumber, errorCorrectLevel);
+	var buffer = new QRBitBuffer();
+	for (var i = 0; i < dataList.length; i++) {
+		var data = dataList[i];
+		buffer.put(data.mode, 4);
+		buffer.put(data.getLength(), QRUtil.getLengthInBits(data.mode, typeNumber) );
+		data.write(buffer);
+	}
+	// calc num max data.
+	var totalDataCount = 0;
+	for (var x = 0; x < rsBlocks.length; x++) {
+		totalDataCount += rsBlocks[x].dataCount;
+	}
+	if (buffer.getLengthInBits() > totalDataCount * 8) {
+		throw new Error("code length overflow. (" + 
+            buffer.getLengthInBits() + 
+            ">" +  
+            totalDataCount * 8 + 
+            ")");
+	}
+	// end code
+	if (buffer.getLengthInBits() + 4 <= totalDataCount * 8) {
+		buffer.put(0, 4);
+	}
+	// padding
+	while (buffer.getLengthInBits() % 8 !== 0) {
+		buffer.putBit(false);
+	}
+	// padding
+	while (true) {
+		if (buffer.getLengthInBits() >= totalDataCount * 8) {
+			break;
+		}
+		buffer.put(QRCode.PAD0, 8);
+		if (buffer.getLengthInBits() >= totalDataCount * 8) {
+			break;
+		}
+		buffer.put(QRCode.PAD1, 8);
+	}
+	return QRCode.createBytes(buffer, rsBlocks);
+};
+QRCode.createBytes = function(buffer, rsBlocks) {
+	var offset = 0;
+	var maxDcCount = 0;
+	var maxEcCount = 0;
+	var dcdata = new Array(rsBlocks.length);
+	var ecdata = new Array(rsBlocks.length);
+	for (var r = 0; r < rsBlocks.length; r++) {
+		var dcCount = rsBlocks[r].dataCount;
+		var ecCount = rsBlocks[r].totalCount - dcCount;
+		maxDcCount = Math.max(maxDcCount, dcCount);
+		maxEcCount = Math.max(maxEcCount, ecCount);
+		dcdata[r] = new Array(dcCount);
+		for (var i = 0; i < dcdata[r].length; i++) {
+			dcdata[r][i] = 0xff & buffer.buffer[i + offset];
+		}
+		offset += dcCount;
+		var rsPoly = QRUtil.getErrorCorrectPolynomial(ecCount);
+		var rawPoly = new QRPolynomial(dcdata[r], rsPoly.getLength() - 1);
+		var modPoly = rawPoly.mod(rsPoly);
+		ecdata[r] = new Array(rsPoly.getLength() - 1);
+		for (var x = 0; x < ecdata[r].length; x++) {
+            var modIndex = x + modPoly.getLength() - ecdata[r].length;
+			ecdata[r][x] = (modIndex >= 0)? modPoly.get(modIndex) : 0;
+		}
+	}
+	var totalCodeCount = 0;
+	for (var y = 0; y < rsBlocks.length; y++) {
+		totalCodeCount += rsBlocks[y].totalCount;
+	}
+	var data = new Array(totalCodeCount);
+	var index = 0;
+	for (var z = 0; z < maxDcCount; z++) {
+		for (var s = 0; s < rsBlocks.length; s++) {
+			if (z < dcdata[s].length) {
+				data[index++] = dcdata[s][z];
+			}
+		}
+	}
+	for (var xx = 0; xx < maxEcCount; xx++) {
+		for (var t = 0; t < rsBlocks.length; t++) {
+			if (xx < ecdata[t].length) {
+				data[index++] = ecdata[t][xx];
+			}
+		}
+	}
+	return data;
+};
+
+window.__QREngine=QRCode;
+window.__QRECL=QRErrorCorrectLevel;
+})();
+
+(function(g){
+  var _Engine=g.__QREngine, _ECL=g.__QRECL;
+  function Shim(el,opt){
+    if(typeof el==='string') el=document.getElementById(el);
+    opt=opt||{};
+    var text=(typeof opt==='string')?opt:(opt.text||'');
+    this._el=el;
+    this._opt={
+      width:opt.width||256, height:opt.height||opt.width||256,
+      colorDark:opt.colorDark||'#000000', colorLight:opt.colorLight||'#ffffff',
+      correctLevel:(typeof opt.correctLevel==='number')?opt.correctLevel:2
+    };
+    if(text) this.makeCode(text);
+  }
+  Shim.prototype.makeCode=function(text){
+    var o=this._opt, el=this._el; if(!el) return;
+    var map={0:_ECL.M,1:_ECL.L,2:_ECL.H,3:_ECL.Q};
+    var lvl=(map[o.correctLevel]!==undefined)?map[o.correctLevel]:_ECL.M;
+    var q=null;
+    try{ q=new _Engine(-1,lvl); q.addData(String(text)); q.make(); }
+    catch(e){ try{ q=new _Engine(-1,_ECL.L); q.addData(String(text)); q.make(); }catch(e2){ q=null; } }
+    if(!q){ el.innerHTML=''; return; }
+    var n=q.getModuleCount(), size=o.width, quiet=4, total=n+quiet*2, cell=size/total, d=[];
+    for(var r=0;r<n;r++) for(var c=0;c<n;c++) if(q.isDark(r,c)){
+      var x=((c+quiet)*cell).toFixed(2), y=((r+quiet)*cell).toFixed(2), s=cell.toFixed(2);
+      d.push('M'+x+' '+y+'h'+s+'v'+s+'h-'+s+'z');
+    }
+    el.innerHTML='<svg width="'+size+'" height="'+o.height+'" viewBox="0 0 '+size+' '+size+'" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges" role="img" aria-label="설비 QR 코드"><rect width="'+size+'" height="'+size+'" fill="'+o.colorLight+'"/><path d="'+d.join('')+'" fill="'+o.colorDark+'"/></svg>';
+    this._text=text;
+  };
+  Shim.prototype.clear=function(){ if(this._el) this._el.innerHTML=''; };
+  Shim.CorrectLevel={M:0,L:1,H:2,Q:3};
+  g.QRCode=Shim;
+})(window);
+
+</script>
+<style>
+/* ============================================================
+   GN-FM Design System v2.0
+   Tokens → Primitives → Components → Layout → Motion → Print
+   ============================================================ */
+
+:root{
+  /* ---- Brand ---- */
+  --brand-50:#EEF4FF; --brand-100:#D9E6FF; --brand-200:#B8D0FF;
+  --brand-300:#8AB2FF; --brand-400:#5B8DFB; --brand-500:#356AF0;
+  --brand-600:#2050D8; --brand-700:#193FAE; --brand-800:#16358A; --brand-900:#0F2560;
+
+  --aqua-400:#22C7D6; --aqua-500:#0EA5B7; --aqua-600:#0B8496;
+
+  /* ---- Semantic ---- */
+  --ok-bg:#E8F8EF; --ok-fg:#0A7A45; --ok-bd:#B6E8CD;
+  --warn-bg:#FFF6E5; --warn-fg:#9A5B00; --warn-bd:#FFE0A3;
+  --danger-bg:#FFEEEE; --danger-fg:#B4242A; --danger-bd:#FFCBCB;
+  --info-bg:#EAF2FF; --info-fg:#1F4FBF; --info-bd:#C7DAFF;
+
+  /* ---- Neutrals (light) ---- */
+  --bg:#F4F6FB;
+  --bg-elev:#FFFFFF;
+  --bg-sunken:#EDF0F7;
+  --bg-inset:#F8FAFC;
+  --surface-line:#E4E8F1;
+  --line-strong:#D3D9E6;
+  --fg:#0E1526;
+  --fg-2:#43506B;
+  --fg-3:#75809A;
+  --fg-4:#9AA3B8;
+
+  --header-bg:linear-gradient(135deg,#0F2560 0%,#193FAE 55%,#0B8496 140%);
+  --header-fg:#EAF1FF;
+
+  /* ---- Elevation ---- */
+  --sh-1:0 1px 2px rgba(15,26,53,.05), 0 1px 3px rgba(15,26,53,.04);
+  --sh-2:0 2px 6px rgba(15,26,53,.06), 0 8px 20px -8px rgba(15,26,53,.10);
+  --sh-3:0 4px 12px rgba(15,26,53,.08), 0 24px 48px -20px rgba(15,26,53,.22);
+  --sh-brand:0 8px 24px -10px rgba(32,80,216,.55);
+
+  /* ---- Geometry ---- */
+  --r-xs:6px; --r-sm:10px; --r-md:14px; --r-lg:18px; --r-xl:24px; --r-pill:999px;
+
+  /* ---- Type ---- */
+  --font:"Pretendard Variable",Pretendard,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","Malgun Gothic",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+
+  /* ---- Motion ---- */
+  --ease:cubic-bezier(.22,.61,.36,1);
+  --ease-out:cubic-bezier(.16,1,.3,1);
+  --dur:.32s;
+}
+
+html[data-theme="dark"]{
+  --bg:#080C16;
+  --bg-elev:#111827;
+  --bg-sunken:#0C1220;
+  --bg-inset:#161F31;
+  --surface-line:#222D42;
+  --line-strong:#2E3B55;
+  --fg:#EEF2FB;
+  --fg-2:#B7C1D8;
+  --fg-3:#8592AE;
+  --fg-4:#68758F;
+
+  --ok-bg:#0D2A1D; --ok-fg:#57D999; --ok-bd:#1C4A33;
+  --warn-bg:#2E2108; --warn-fg:#FFC65C; --warn-bd:#513A0F;
+  --danger-bg:#2E1114; --danger-fg:#FF8A8F; --danger-bd:#552126;
+  --info-bg:#0F1E3D; --info-fg:#8FB6FF; --info-bd:#22345E;
+
+  --brand-50:#111C33; --brand-100:#16274A;
+  --header-bg:linear-gradient(135deg,#0A1330 0%,#12275F 55%,#08414C 140%);
+  --sh-1:0 1px 2px rgba(0,0,0,.4);
+  --sh-2:0 2px 8px rgba(0,0,0,.45), 0 10px 24px -12px rgba(0,0,0,.6);
+  --sh-3:0 8px 28px rgba(0,0,0,.55), 0 30px 60px -24px rgba(0,0,0,.8);
+  --sh-brand:0 8px 26px -12px rgba(53,106,240,.75);
+}
+
+/* ---------------- Reset ---------------- */
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;overscroll-behavior-x:none}
+body{
+  margin:0; font-family:var(--font); background:var(--bg); color:var(--fg);
+  overscroll-behavior-x:none; overflow-x:hidden;
+  font-size:15px; line-height:1.6; letter-spacing:-.011em;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  transition:background var(--dur) var(--ease), color var(--dur) var(--ease);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+h1,h2,h3,h4,p,ul,ol,figure{margin:0}
+ul,ol{padding:0;list-style:none}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:0}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--brand-500);outline-offset:2px;border-radius:4px}
+::selection{background:var(--brand-500);color:#fff}
+
+/* Ambient background wash */
+body::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background:
+    radial-gradient(900px 500px at 12% -8%, rgba(53,106,240,.10), transparent 62%),
+    radial-gradient(760px 460px at 96% 6%, rgba(14,165,183,.10), transparent 60%);
+}
+html[data-theme="dark"] body::before{
+  background:
+    radial-gradient(900px 520px at 10% -10%, rgba(53,106,240,.20), transparent 62%),
+    radial-gradient(800px 480px at 98% 4%, rgba(14,165,183,.16), transparent 60%);
+}
+
+/* ============ App Bar ============ */
+.appbar{
+  position:relative; z-index:60;
+  background:var(--header-bg); color:var(--header-fg);
+  box-shadow:0 1px 0 rgba(255,255,255,.08) inset, var(--sh-2);
+  padding-top:env(safe-area-inset-top);
+}
+.appbar::after{
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:
+    radial-gradient(520px 160px at 88% 0%, rgba(34,199,214,.30), transparent 70%),
+    linear-gradient(to bottom, rgba(255,255,255,.06), transparent 60%);
+}
+.appbar__inner{
+  position:relative; z-index:1;
+  max-width:1180px; margin:0 auto; padding:13px 16px;
+  display:flex; align-items:center; gap:10px;
+}
+.brand{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.brand__mark{
+  width:38px;height:38px;flex:none;border-radius:11px;
+  background:linear-gradient(150deg,rgba(255,255,255,.28),rgba(255,255,255,.06));
+  border:1px solid rgba(255,255,255,.28);
+  display:grid;place-items:center;
+  box-shadow:0 6px 16px -8px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.35);
+  backdrop-filter:blur(8px);
+}
+.brand__mark svg{width:21px;height:21px;display:block}
+.brand__text{min-width:0}
+.brand__title{
+  font-size:15px;font-weight:800;letter-spacing:-.02em;line-height:1.25;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.brand__sub{
+  font-size:10px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;
+  color:rgba(234,241,255,.62);margin-top:1px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.appbar__spacer{display:none}
+.appbar__actions{display:flex;align-items:center;gap:7px;flex:none}
+
+.live{
+  display:inline-flex;align-items:center;gap:6px;white-space:nowrap;flex:none;
+  padding:6px 11px 6px 9px;border-radius:var(--r-pill);
+  background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.20);
+  font-size:11px;font-weight:700;letter-spacing:.01em;
+  backdrop-filter:blur(10px);
+}
+.live__dot{width:7px;height:7px;border-radius:50%;background:#3EE58F;box-shadow:0 0 0 0 rgba(62,229,143,.7);animation:pulse 2.2s var(--ease) infinite}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 rgba(62,229,143,.65)}
+  70%{box-shadow:0 0 0 8px rgba(62,229,143,0)}
+  100%{box-shadow:0 0 0 0 rgba(62,229,143,0)}
+}
+.icon-btn{
+  width:36px;height:36px;border-radius:11px;display:grid;place-items:center;
+  background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.20);
+  color:inherit;transition:transform .18s var(--ease),background .18s var(--ease);
+  backdrop-filter:blur(10px);
+}
+.icon-btn:hover{background:rgba(255,255,255,.22);transform:translateY(-1px)}
+.icon-btn:active{transform:scale(.94)}
+.icon-btn svg{width:18px;height:18px}
+html[data-theme="dark"] .sun{display:block}
+html[data-theme="dark"] .moon{display:none}
+.sun{display:none} .moon{display:block}
+
+/* Breadcrumb strip */
+.crumbs{
+  position:relative;z-index:1;
+  max-width:1180px;margin:0 auto;padding:0 18px 12px;
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  font-size:11.5px;font-weight:600;color:rgba(234,241,255,.66);
+}
+.crumbs span.sep{opacity:.45}
+.crumbs b{color:#fff;font-weight:700}
+
+/* ============ Segmented equipment nav ============ */
+.eqbar{
+  position:sticky;top:0;z-index:50;
+  background:color-mix(in srgb, var(--bg-elev) 88%, transparent);
+  backdrop-filter:blur(14px) saturate(1.4);
+  border-bottom:1px solid var(--surface-line);
+  box-shadow:var(--sh-1);
+}
+.eqbar__inner{max-width:1180px;margin:0 auto;padding:10px 18px;display:flex;align-items:center;gap:12px}
+.eqbar__label{
+  font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--fg-4);flex:none;
+}
+.segs{
+  display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;
+  -webkit-overflow-scrolling:touch;padding:2px;flex:1;
+  scroll-snap-type:x proximity;overscroll-behavior-x:contain;
+}
+.segs::-webkit-scrollbar{display:none}
+.seg{
+  flex:none;scroll-snap-align:start;
+  display:inline-flex;align-items:center;gap:7px;
+  padding:8px 14px;border-radius:var(--r-pill);
+  background:var(--bg-sunken);border:1px solid transparent;
+  color:var(--fg-2);font-size:12.5px;font-weight:700;white-space:nowrap;
+  transition:all .22s var(--ease);
+}
+.seg:hover{border-color:var(--line-strong);color:var(--fg);transform:translateY(-1px)}
+.seg__ico{width:16px;height:16px;flex:none;opacity:.8}
+.seg[aria-selected="true"]{
+  background:linear-gradient(135deg,var(--brand-600),var(--brand-500));
+  color:#fff;box-shadow:var(--sh-brand);border-color:transparent;
+}
+.seg[aria-selected="true"] .seg__ico{opacity:1}
+
+/* ============ Layout ============ */
+.wrap{
+  position:relative;z-index:1;max-width:1180px;margin:0 auto;padding:20px 18px 56px;
+  touch-action:pan-y pinch-zoom; overscroll-behavior-x:none;
+}
+.grid{display:grid;gap:16px;grid-template-columns:1fr}
+@media(min-width:960px){
+  .grid{grid-template-columns:minmax(0,1.55fr) minmax(320px,.95fr);align-items:start}
+  .col-side{position:sticky;top:70px}
+}
+.stack{display:grid;gap:16px}
+
+/* ============ Card ============ */
+.card{
+  background:var(--bg-elev);border:1px solid var(--surface-line);
+  border-radius:var(--r-lg);box-shadow:var(--sh-1);
+  overflow:hidden;transition:box-shadow .25s var(--ease),border-color .25s var(--ease);
+}
+.card:hover{box-shadow:var(--sh-2)}
+.card__head{
+  display:flex;align-items:center;gap:10px;
+  padding:14px 16px;border-bottom:1px solid var(--surface-line);
+  background:linear-gradient(to bottom,var(--bg-inset),transparent);
+}
+.card__ico{
+  width:30px;height:30px;flex:none;border-radius:9px;display:grid;place-items:center;
+  background:var(--info-bg);color:var(--info-fg);border:1px solid var(--info-bd);
+}
+.card__ico svg{width:16px;height:16px}
+.card__ico.is-warn{background:var(--warn-bg);color:var(--warn-fg);border-color:var(--warn-bd)}
+.card__ico.is-ok{background:var(--ok-bg);color:var(--ok-fg);border-color:var(--ok-bd)}
+.card__ico.is-danger{background:var(--danger-bg);color:var(--danger-fg);border-color:var(--danger-bd)}
+.card__title{font-size:13.5px;font-weight:800;letter-spacing:-.015em;flex:1;min-width:0}
+.card__meta{font-size:11px;font-weight:600;color:var(--fg-4)}
+.card__body{padding:16px}
+.card__foot{padding:12px 16px;border-top:1px solid var(--surface-line);background:var(--bg-inset)}
+
+/* ============ Hero (equipment header) ============ */
+.hero{
+  position:relative;overflow:hidden;
+  border-radius:var(--r-xl);border:1px solid var(--surface-line);
+  background:var(--bg-elev);box-shadow:var(--sh-2);
+}
+.hero__banner{
+  position:relative;padding:20px 20px 18px;
+  background:var(--header-bg);color:#fff;
+}
+.hero__banner::after{
+  content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background-image:
+    linear-gradient(rgba(255,255,255,.10) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.10) 1px,transparent 1px);
+  background-size:34px 34px;
+  mask-image:radial-gradient(120% 100% at 100% 0%,#000,transparent 72%);
+  -webkit-mask-image:radial-gradient(120% 100% at 100% 0%,#000,transparent 72%);
+}
+.hero__row{position:relative;z-index:1;display:flex;align-items:flex-start;gap:14px}
+.hero__glyph{
+  width:56px;height:56px;flex:none;border-radius:16px;display:grid;place-items:center;
+  background:linear-gradient(150deg,rgba(255,255,255,.26),rgba(255,255,255,.05));
+  border:1px solid rgba(255,255,255,.3);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 10px 24px -12px rgba(0,0,0,.7);
+}
+.hero__glyph svg{width:28px;height:28px}
+.hero__eyebrow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.hero h2{font-size:clamp(17px,4.4vw,21px);font-weight:800;letter-spacing:-.03em;line-height:1.3;word-break:keep-all}
+.hero__id{
+  font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.06em;
+  color:rgba(255,255,255,.72);margin-top:5px;display:flex;align-items:center;gap:6px;
+}
+.hero__stats{
+  position:relative;z-index:1;
+  display:grid;grid-template-columns:repeat(3,1fr);gap:1px;
+  background:var(--surface-line);
+}
+.stat{background:var(--bg-elev);padding:13px 14px;text-align:center}
+.stat__k{font-size:9.5px;font-weight:800;letter-spacing:.10em;text-transform:uppercase;color:var(--fg-4)}
+.stat__v{font-size:17px;font-weight:800;letter-spacing:-.02em;margin-top:3px;font-family:var(--mono)}
+.stat__v small{font-size:10.5px;font-weight:700;color:var(--fg-3);margin-left:2px;font-family:var(--font)}
+.stat__v.is-ok{color:var(--ok-fg)}
+.stat__v.is-warn{color:var(--warn-fg)}
+
+/* ============ Badges & chips ============ */
+.badge{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3.5px 9px;border-radius:var(--r-pill);
+  font-size:10.5px;font-weight:800;letter-spacing:.02em;
+  border:1px solid transparent;white-space:nowrap;
+}
+.badge--glass{background:rgba(255,255,255,.18);border-color:rgba(255,255,255,.28);color:#fff;backdrop-filter:blur(8px)}
+.badge--ok{background:var(--ok-bg);color:var(--ok-fg);border-color:var(--ok-bd)}
+.badge--warn{background:var(--warn-bg);color:var(--warn-fg);border-color:var(--warn-bd)}
+.badge--info{background:var(--info-bg);color:var(--info-fg);border-color:var(--info-bd)}
+.badge--danger{background:var(--danger-bg);color:var(--danger-fg);border-color:var(--danger-bd)}
+.badge__dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+
+/* ============ Spec table ============ */
+.specs{display:grid;gap:0}
+.spec{
+  display:grid;grid-template-columns:96px 1fr;gap:12px;align-items:baseline;
+  padding:11px 0;border-bottom:1px dashed var(--surface-line);
+}
+.spec:last-child{border-bottom:0;padding-bottom:0}
+.spec:first-child{padding-top:0}
+.spec__k{
+  font-size:11px;font-weight:800;color:var(--fg-4);
+  letter-spacing:.02em;display:flex;align-items:center;gap:6px;
+}
+.spec__k::before{content:"";width:3px;height:11px;border-radius:2px;background:var(--brand-400);opacity:.8}
+.spec__v{font-size:12.5px;font-weight:600;color:var(--fg-2);line-height:1.55}
+
+/* ============ Procedure timeline ============ */
+.steps{position:relative;padding-left:2px}
+.step{position:relative;display:grid;grid-template-columns:30px 1fr;gap:12px;padding-bottom:16px}
+.step:last-child{padding-bottom:0}
+.step::before{
+  content:"";position:absolute;left:14.5px;top:28px;bottom:-2px;width:2px;
+  background:linear-gradient(to bottom,var(--brand-300),var(--surface-line));
+  border-radius:2px;
+}
+.step:last-child::before{display:none}
+.step__n{
+  width:30px;height:30px;border-radius:50%;display:grid;place-items:center;
+  background:var(--bg-elev);border:2px solid var(--brand-400);color:var(--brand-600);
+  font-family:var(--mono);font-size:12px;font-weight:700;z-index:1;
+  box-shadow:0 0 0 4px color-mix(in srgb,var(--brand-400) 12%,transparent);
+}
+html[data-theme="dark"] .step__n{color:var(--brand-300)}
+.step__t{font-size:13px;line-height:1.65;color:var(--fg-2);font-weight:500;padding-top:4px}
+.step__t b{color:var(--fg);font-weight:700}
+
+/* ============ Alert ============ */
+.alert{
+  display:grid;grid-template-columns:22px 1fr;gap:11px;
+  padding:13px 14px;border-radius:var(--r-md);
+  border:1px solid var(--warn-bd);background:var(--warn-bg);
+  position:relative;overflow:hidden;
+}
+.alert::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--warn-fg);opacity:.75}
+.alert svg{width:20px;height:20px;color:var(--warn-fg);margin-top:1px}
+.alert__t{font-size:11px;font-weight:800;color:var(--warn-fg);letter-spacing:.02em;margin-bottom:3px;text-transform:uppercase}
+.alert__d{font-size:12.5px;line-height:1.65;color:var(--warn-fg);opacity:.92;font-weight:500}
+
+/* ============ Checklist ============ */
+.progressrow{display:flex;align-items:center;gap:14px;padding:2px 0 14px}
+.ring{width:56px;height:56px;flex:none;position:relative}
+.ring svg{transform:rotate(-90deg);width:56px;height:56px}
+.ring circle{fill:none;stroke-width:6;stroke-linecap:round}
+.ring .bgc{stroke:var(--bg-sunken)}
+.ring .fgc{stroke:url(#ringGrad);transition:stroke-dashoffset .6s var(--ease-out)}
+.ring__num{
+  position:absolute;inset:0;display:grid;place-items:center;
+  font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:-.02em;
+}
+.progressrow__meta{flex:1;min-width:0}
+.progressrow__t{font-size:12.5px;font-weight:700}
+.progressrow__s{font-size:11.5px;color:var(--fg-3);margin-top:2px;font-weight:500}
+
+.checks{display:grid;gap:8px}
+.check{
+  display:flex;align-items:flex-start;gap:11px;
+  padding:12px 13px;border-radius:var(--r-md);
+  background:var(--bg-inset);border:1px solid var(--surface-line);
+  cursor:pointer;transition:all .2s var(--ease);user-select:none;
+}
+.check:hover{border-color:var(--brand-300);background:var(--brand-50)}
+html[data-theme="dark"] .check:hover{background:var(--brand-50)}
+.check input{position:absolute;opacity:0;width:0;height:0}
+.check__box{
+  width:19px;height:19px;flex:none;border-radius:6px;margin-top:1px;
+  border:2px solid var(--line-strong);background:var(--bg-elev);
+  display:grid;place-items:center;transition:all .2s var(--ease);
+}
+.check__box svg{width:11px;height:11px;color:#fff;opacity:0;transform:scale(.5);transition:all .2s var(--ease-out)}
+.check input:checked + .check__box{background:var(--brand-500);border-color:var(--brand-500);box-shadow:0 3px 10px -3px rgba(53,106,240,.7)}
+.check input:checked + .check__box svg{opacity:1;transform:scale(1)}
+.check input:focus-visible + .check__box{outline:2px solid var(--brand-500);outline-offset:2px}
+.check__t{font-size:12.5px;line-height:1.6;font-weight:600;color:var(--fg-2);transition:all .2s var(--ease)}
+.check:has(input:checked){border-color:var(--brand-200);background:var(--brand-50)}
+.check:has(input:checked) .check__t{color:var(--fg-4);text-decoration:line-through;text-decoration-color:var(--fg-4)}
+
+/* ============ Buttons ============ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:12px 16px;border-radius:var(--r-md);
+  font-size:12.5px;font-weight:800;letter-spacing:-.005em;
+  border:1px solid transparent;transition:all .2s var(--ease);width:100%;
+}
+.btn svg{width:16px;height:16px;flex:none}
+.btn:active{transform:scale(.985)}
+.btn--primary{
+  background:linear-gradient(135deg,var(--brand-600),var(--brand-500));color:#fff;
+  box-shadow:var(--sh-brand);
+}
+.btn--primary:hover{filter:brightness(1.08);transform:translateY(-1px);box-shadow:0 12px 28px -10px rgba(32,80,216,.7)}
+.btn--dark{background:var(--fg);color:var(--bg-elev);box-shadow:var(--sh-1)}
+.btn--dark:hover{filter:brightness(1.12);transform:translateY(-1px)}
+.btn--ghost{background:var(--bg-inset);border-color:var(--surface-line);color:var(--fg-2)}
+.btn--ghost:hover{border-color:var(--line-strong);color:var(--fg);background:var(--bg-sunken)}
+.btn--video{
+  background:linear-gradient(135deg,#E8382F,#C2211C);color:#fff;
+  box-shadow:0 8px 22px -10px rgba(226,42,36,.75);
+}
+.btn--video:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.btn:disabled{opacity:.5;pointer-events:none}
+.btnrow{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+
+/* ============ QR panel ============ */
+.qrpanel{text-align:center}
+.qrstage{
+  position:relative;margin:4px auto 14px;width:100%;max-width:230px;
+  padding:16px;border-radius:var(--r-lg);
+  background:#fff;border:1px solid var(--surface-line);
+  box-shadow:var(--sh-2);
+}
+.qrstage::before,.qrstage::after{
+  content:"";position:absolute;width:16px;height:16px;border:2.5px solid var(--brand-500);
+}
+.qrstage::before{top:8px;left:8px;border-right:0;border-bottom:0;border-radius:5px 0 0 0}
+.qrstage::after{bottom:8px;right:8px;border-left:0;border-top:0;border-radius:0 0 5px 0}
+#qrcode{display:flex;justify-content:center}
+#qrcode img,#qrcode canvas{display:block;border-radius:4px}
+.qrwarn{margin:8px 0 0;padding:9px 11px;font-size:11.5px;line-height:1.6;text-align:center;
+  color:var(--warn-fg);background:var(--warn-bg);border:1px solid var(--warn-bd);border-radius:var(--r-sm)}
+.qrcap{
+  font-family:var(--mono);font-size:10px;font-weight:700;color:var(--fg-4);
+  word-break:break-all;line-height:1.5;margin-top:11px;padding:0 4px;
+}
+.qrnote{font-size:11.5px;color:var(--fg-3);line-height:1.6;font-weight:500}
+
+/* ============ Log / activity ============ */
+.logs{display:grid;gap:2px}
+.log{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:9px 0;border-bottom:1px dashed var(--surface-line);align-items:center}
+.log:last-child{border-bottom:0}
+.log__dot{width:8px;height:8px;border-radius:50%;background:var(--ok-fg);box-shadow:0 0 0 3px var(--ok-bg)}
+.log__dot.is-warn{background:var(--warn-fg);box-shadow:0 0 0 3px var(--warn-bg)}
+.log__dot.is-info{background:var(--info-fg);box-shadow:0 0 0 3px var(--info-bg)}
+.log__t{font-size:12px;font-weight:600;color:var(--fg-2)}
+.log__d{font-family:var(--mono);font-size:10px;color:var(--fg-4);margin-top:1px;font-weight:600}
+
+/* ============ Toast ============ */
+.toasts{
+  position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom));
+  transform:translateX(-50%);z-index:200;
+  display:grid;gap:8px;width:min(420px,calc(100vw - 32px));
+}
+.toast{
+  display:flex;align-items:center;gap:11px;
+  padding:13px 15px;border-radius:var(--r-md);
+  background:var(--fg);color:var(--bg-elev);
+  box-shadow:var(--sh-3);font-size:12.5px;font-weight:700;
+  animation:toastIn .4s var(--ease-out) both;
+}
+.toast.is-out{animation:toastOut .3s var(--ease) both}
+.toast__ico{width:22px;height:22px;flex:none;border-radius:50%;display:grid;place-items:center;background:#22C55E;color:#fff}
+.toast__ico svg{width:12px;height:12px}
+.toast__ico.is-warn{background:#F59E0B}
+@keyframes toastIn{from{opacity:0;transform:translateY(16px) scale(.96)}to{opacity:1;transform:none}}
+@keyframes toastOut{to{opacity:0;transform:translateY(10px) scale(.97)}}
+
+/* ============ Motion ============ */
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.anim{animation:fadeUp .5s var(--ease-out) both}
+.anim:nth-child(1){animation-delay:.02s}
+.anim:nth-child(2){animation-delay:.07s}
+.anim:nth-child(3){animation-delay:.12s}
+.anim:nth-child(4){animation-delay:.17s}
+.anim:nth-child(5){animation-delay:.22s}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
+
+/* ============ Footer ============ */
+.foot{
+  max-width:1180px;margin:0 auto;padding:28px 18px 40px;
+  display:flex;flex-wrap:wrap;align-items:center;gap:10px;justify-content:space-between;
+  border-top:1px solid var(--surface-line);margin-top:12px;
+  font-size:11px;color:var(--fg-4);font-weight:600;position:relative;z-index:1;
+}
+
+/* ============ Swipe hint ============ */
+.swipehint{
+  display:none;align-items:center;justify-content:center;gap:8px;
+  margin:0 0 12px;font-size:11px;font-weight:700;color:var(--fg-4);
+  letter-spacing:.01em;
+}
+.swipehint span{
+  font-size:14px;color:var(--brand-500);
+  animation:nudge 1.8s var(--ease) infinite;
+}
+.swipehint span:last-child{animation-delay:.9s}
+@keyframes nudge{0%,60%,100%{opacity:.35;transform:translateX(0)}30%{opacity:1;transform:translateX(-3px)}}
+.swipehint span:last-child{animation-name:nudgeR}
+@keyframes nudgeR{0%,60%,100%{opacity:.35;transform:translateX(0)}30%{opacity:1;transform:translateX(3px)}}
+.swipehint.is-gone{display:none !important}
+@media (hover:none) and (pointer:coarse){ .swipehint{display:flex} }
+
+/* ============ Responsive (mobile hardening) ============ */
+@media (max-width:640px){
+  .appbar__inner{padding:11px 14px;gap:8px}
+  .crumbs{padding:0 14px 10px;font-size:10.5px;gap:6px}
+  .brand__mark{width:34px;height:34px;border-radius:10px}
+  .brand__mark svg{width:19px;height:19px}
+  .brand__title{font-size:13.5px}
+  .brand__sub{font-size:9px;letter-spacing:.07em}
+  .live{padding:5px 9px 5px 8px;font-size:10.5px}
+  .icon-btn{width:32px;height:32px;border-radius:10px}
+  .icon-btn svg{width:16px;height:16px}
+
+  .eqbar__inner{padding:9px 14px;gap:9px}
+  .eqbar__label{display:none}
+  .segs{margin:0 -14px;padding:2px 14px}
+  .seg{padding:7px 12px;font-size:12px}
+
+  .wrap{padding:16px 14px 44px}
+  .grid{gap:14px}
+  .stack{gap:14px}
+
+  .hero__banner{padding:17px 16px 15px}
+  .hero__row{gap:12px}
+  .hero__glyph{width:48px;height:48px;border-radius:14px}
+  .hero__glyph svg{width:24px;height:24px}
+  .stat{padding:11px 8px}
+  .stat__k{font-size:9px;letter-spacing:.06em}
+  .stat__v{font-size:15px}
+
+  .card__head{padding:13px 14px;gap:9px}
+  .card__body{padding:14px}
+  .card__foot{padding:11px 14px}
+  .spec{grid-template-columns:82px 1fr;gap:10px}
+  .qrstage{max-width:210px}
+}
+@media (max-width:360px){
+  .brand__sub{display:none}
+  .live__txt{display:none}
+  .live{padding:7px;gap:0}
+  .hero__stats{grid-template-columns:1fr 1fr}
+  .hero__stats .stat:last-child{grid-column:1 / -1}
+  .btnrow{grid-template-columns:1fr}
+}
+
+/* ============ Print: 현장 부착용 QR 라벨 ============ */
+@media print{
+  body::before,.appbar,.eqbar,.toasts,.no-print{display:none !important}
+  body{background:#fff}
+  .wrap{padding:0;max-width:none}
+  .grid{display:block}
+  .print-label{display:block !important}
+  .card,.hero{display:none !important}
+}
+.print-label{display:none;padding:18mm 14mm;font-family:var(--font);color:#000}
+.print-label .pl-box{border:2.5px solid #000;border-radius:6mm;padding:10mm;text-align:center;max-width:120mm;margin:0 auto}
+.print-label .pl-org{font-size:11pt;font-weight:800;letter-spacing:.06em}
+.print-label .pl-name{font-size:19pt;font-weight:800;margin:4mm 0 1mm;letter-spacing:-.02em}
+.print-label .pl-cat{font-size:10pt;font-weight:600;color:#444}
+.print-label .pl-qr{margin:7mm auto 5mm;display:flex;justify-content:center}
+.print-label .pl-id{font-family:var(--mono);font-size:9pt;font-weight:700;letter-spacing:.08em}
+.print-label .pl-guide{font-size:9pt;margin-top:4mm;padding-top:4mm;border-top:1px dashed #999;color:#333;line-height:1.6}
+
+/* ============================================================
+   계층 구조 (시설 목록 → 시설 → 설비) + 편집기
+   ============================================================ */
+[hidden]{display:none !important}
+.pagehead{display:flex;align-items:flex-end;gap:12px;margin:2px 2px 18px;animation:rise .5s var(--ease-out) both}
+.pagehead__t{flex:1;min-width:0}
+.pagehead h1{font-size:21px;font-weight:800;letter-spacing:-.03em;margin:0 0 4px;color:var(--fg)}
+.pagehead p{margin:0;color:var(--fg-3);font-size:13.5px;line-height:1.6}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,268px),1fr));gap:13px}
+.tile{display:flex;align-items:center;gap:14px;text-align:left;width:100%;padding:16px;cursor:pointer;
+  border-radius:var(--r-lg);background:var(--bg-elev);border:1px solid var(--surface-line);box-shadow:var(--sh-1);
+  transition:box-shadow .22s var(--ease),border-color .22s var(--ease),transform .22s var(--ease);
+  animation:rise .5s var(--ease-out) both}
+.tile:hover{box-shadow:var(--sh-2);border-color:var(--brand-300);transform:translateY(-2px)}
+.tile:active{transform:scale(.99)}
+.tile__ico{width:46px;height:46px;flex:none;border-radius:14px;display:grid;place-items:center;color:var(--brand-600);
+  background:linear-gradient(135deg,var(--brand-50),var(--brand-100));
+  border:1px solid color-mix(in srgb,var(--brand-500) 15%,transparent)}
+.tile__ico svg{width:23px;height:23px}
+.tile__b{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.tile__n{font-size:15.5px;font-weight:800;letter-spacing:-.02em;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile__s{font-size:12.5px;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile__tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.tile__chev{color:var(--fg-4);font-size:21px;flex:none;margin-left:4px}
+.tile__edit{flex:none;width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:var(--fg-3);
+  background:var(--bg-inset);border:1px solid var(--surface-line);cursor:pointer}
+.tile__edit:hover{color:var(--brand-600);border-color:var(--brand-300)}
+.tile__edit svg{width:15px;height:15px}
+.tile.is-add{justify-content:center;color:var(--brand-600);border-style:dashed;border-color:var(--line-strong);
+  background:var(--bg-inset);box-shadow:none;font-weight:800;font-size:14.5px;gap:8px;min-height:78px}
+.tile.is-add:hover{border-color:var(--brand-400);background:var(--brand-50)}
+.tile.is-add svg{width:19px;height:19px}
+.empty{padding:30px 18px;text-align:center;color:var(--fg-3);font-size:13.5px;line-height:1.7;
+  border:1px dashed var(--line-strong);border-radius:var(--r-lg);background:var(--bg-inset)}
+.crumbs .cb{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin-right:2px;
+  border-radius:8px;color:var(--header-fg);background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);
+  cursor:pointer;flex:none}
+.crumbs .cb svg{width:14px;height:14px}
+.crumbs .cb:hover{background:rgba(255,255,255,.26)}
+.crumbs a{color:inherit;text-decoration:none;cursor:pointer;opacity:.85}
+.crumbs a:hover{opacity:1;text-decoration:underline}
+/* ---- 편집 모달 ---- */
+.modal{position:fixed;inset:0;z-index:120;display:flex;align-items:flex-end;justify-content:center;
+  background:rgba(8,15,32,.5);backdrop-filter:blur(3px);animation:fade .2s var(--ease-out) both}
+@media(min-width:720px){.modal{align-items:center}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.sheet{width:100%;max-width:600px;max-height:92vh;display:flex;flex-direction:column;background:var(--bg-elev);
+  border:1px solid var(--surface-line);border-radius:var(--r-xl) var(--r-xl) 0 0;box-shadow:var(--sh-3);
+  animation:up .3s var(--ease-out) both}
+@media(min-width:720px){.sheet{border-radius:var(--r-xl)}}
+@keyframes up{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
+.sheet__h{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--surface-line);flex:none}
+.sheet__h h3{margin:0;flex:1;font-size:16px;font-weight:800;letter-spacing:-.02em}
+.sheet__x{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:var(--fg-3);
+  background:var(--bg-inset);border:1px solid var(--surface-line);cursor:pointer;font-size:17px;line-height:1}
+.sheet__b{padding:16px 18px;overflow:auto;display:flex;flex-direction:column;gap:14px}
+.sheet__f{padding:13px 18px;border-top:1px solid var(--surface-line);display:flex;gap:9px;flex:none;
+  background:var(--bg-inset);border-radius:0 0 var(--r-xl) var(--r-xl)}
+.sheet__f .btn{flex:1}
+.fld{display:flex;flex-direction:column;gap:6px}
+.fld>label{font-size:12.5px;font-weight:800;color:var(--fg-2);letter-spacing:-.01em}
+.fld .hint{font-size:11.5px;color:var(--fg-4);line-height:1.5}
+.fld input,.fld textarea,.fld select{width:100%;font:inherit;font-size:14px;color:var(--fg);background:var(--bg-inset);
+  border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:10px 12px;outline:none;
+  transition:border-color .18s var(--ease),box-shadow .18s var(--ease)}
+.fld textarea{resize:vertical;min-height:88px;line-height:1.65}
+.fld input:focus,.fld textarea:focus,.fld select:focus{border-color:var(--brand-400);box-shadow:0 0 0 3px var(--brand-50)}
+.frow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn--danger{background:var(--danger-bg);color:var(--danger-fg);border:1px solid var(--danger-bd)}
+.btn--danger:hover{background:#FFE2E2}
+/* ---- 특이사항 입력 ---- */
+.noteta{width:100%;font:inherit;font-size:13.5px;line-height:1.7;color:var(--fg);background:var(--bg-inset);
+  border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:11px 13px;min-height:92px;resize:vertical;
+  outline:none;transition:border-color .18s var(--ease),box-shadow .18s var(--ease)}
+.noteta:focus{border-color:var(--brand-400);box-shadow:0 0 0 3px var(--brand-50)}
+.noteta::placeholder{color:var(--fg-4)}
+/* ---- 관리자 / 이력 삭제 ---- */
+.log{grid-template-columns:auto 1fr auto}
+.log__del{width:24px;height:24px;flex:none;border-radius:7px;display:grid;place-items:center;font-size:14px;line-height:1;
+  color:var(--danger-fg);background:var(--danger-bg);border:1px solid var(--danger-bd);cursor:pointer}
+.log__del:hover{background:#FFDCDC}
+.adminbtn{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:800;letter-spacing:.02em;
+  padding:4px 9px;border-radius:var(--r-pill);cursor:pointer;
+  color:var(--fg-3);background:var(--bg-inset);border:1px solid var(--surface-line)}
+.adminbtn:hover{color:var(--brand-600);border-color:var(--brand-300)}
+.adminbtn.on{color:var(--ok-fg);background:var(--ok-bg);border-color:var(--ok-bd)}
+.adminbtn svg{width:12px;height:12px}
+.adminbtn--top{color:var(--header-fg);background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.26);
+  padding:6px 11px;font-size:11px}
+.adminbtn--top:hover{color:#fff;background:rgba(255,255,255,.26);border-color:rgba(255,255,255,.4)}
+.adminbtn--top.on{color:#0B3D2A;background:#7BE6B0;border-color:#5BD79B}
+.live.is-off .live__dot{background:#FFB020;box-shadow:0 0 0 3px rgba(255,176,32,.25)}
+.live.is-err .live__dot{background:#FF6B6B;box-shadow:0 0 0 3px rgba(255,107,107,.25)}
+@media(max-width:520px){.adminbtn--top span{display:none}.adminbtn--top{padding:6px 9px}}
+</style>
+</head>
+<body>
+
+<!-- ===================== APP BAR ===================== -->
+<header class="appbar">
+  <div class="appbar__inner">
+    <div class="brand">
+      <div class="brand__mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M2 12s2-2 4-2 3 2 5 2 3-2 5-2 4 2 4 2"/>
+          <path d="M2 17s2-2 4-2 3 2 5 2 3-2 5-2 4 2 4 2"/>
+          <path d="M7 7a2 2 0 1 1 4 0v6"/><path d="M13 5a2 2 0 1 1 4 0v8"/>
+        </svg>
+      </div>
+      <div class="brand__text">
+        <div class="brand__title">스마트 시설관리</div>
+        <div class="brand__sub">GN-FM · Facility Ops Platform</div>
+      </div>
+    </div>
+    <div class="appbar__spacer"></div>
+    <div class="appbar__actions">
+      <span class="live" id="netBadge" title="데이터 연결 상태"><span class="live__dot"></span><span class="live__txt" id="netTxt">운영중</span></span>
+      <button class="adminbtn adminbtn--top" id="settingsBtn" onclick="openSettings()" title="설정" hidden></button>
+      <button class="adminbtn adminbtn--top" data-admin-btn onclick="toggleAdmin()"></button>
+      <button class="icon-btn" id="themeBtn" aria-label="테마 전환" title="다크/라이트 전환">
+        <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+      </button>
+    </div>
+  </div>
+  <nav class="crumbs" aria-label="위치" id="crumbs"></nav>
+</header>
+
+<!-- ===================== EQUIPMENT SEGMENTED NAV ===================== -->
+<nav class="eqbar no-print" aria-label="설비 선택">
+  <div class="eqbar__inner">
+    <span class="eqbar__label">설비</span>
+    <div class="segs" id="segs" role="tablist"></div>
+  </div>
+</nav>
+
+<!-- ===================== MAIN ===================== -->
+<main class="wrap">
+
+  <section id="listPane" hidden></section>
+
+  <div id="detailPane">
+  <p class="swipehint no-print" id="swipeHint">
+    <span>‹</span> 좌우로 밀어서 설비 전환 <span>›</span>
+  </p>
+
+  <div class="grid">
+
+    <!-- ---------- 좌측: 설비 상세 ---------- -->
+    <section class="stack" id="detail" aria-live="polite"></section>
+
+    <!-- ---------- 우측: QR / 이력 ---------- -->
+    <aside class="stack col-side">
+
+      <div class="card anim qrpanel no-print">
+        <div class="card__head">
+          <div class="card__ico">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+              <rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM18 18h3v3h-3zM14 21h1M21 14h-1"/>
+            </svg>
+          </div>
+          <div class="card__title">현장 태그 QR</div>
+          <span class="badge badge--info"><span class="badge__dot"></span>동기화</span>
+        </div>
+        <div class="card__body">
+          <div class="qrstage">
+            <div id="qrcode"></div>
+          </div>
+          <p class="qrcap" id="qrUrl">&nbsp;</p>
+          <p class="qrwarn" id="qrWarn" hidden>이 QR은 아직 스캔되지 않습니다. 관리자 <b>설정</b>에서 공개 웹 주소를 등록하세요.</p>
+          <p class="qrnote" style="margin:10px 0 14px">설비 라벨을 스캔하면 해당 설비의 매뉴얼·점검표가 즉시 열립니다.</p>
+          <div class="btnrow">
+            <button class="btn btn--dark" onclick="printLabel()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8" rx="1"/></svg>
+              라벨 인쇄
+            </button>
+            <button class="btn btn--ghost" onclick="copyLink()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+              링크 복사
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card anim no-print">
+        <div class="card__head">
+          <div class="card__ico is-ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+          </div>
+          <div class="card__title">최근 점검 이력</div>
+          <button class="adminbtn" data-admin-btn onclick="toggleAdmin()"></button>
+          <span class="card__meta" id="logCount">0건</span>
+        </div>
+        <div class="card__body">
+          <div class="logs" id="logs"></div>
+        </div>
+      </div>
+
+    </aside>
+  </div>
+  </div><!-- /detailPane -->
+</main>
+
+<footer class="foot no-print">
+  <span>© 2026 강릉국민체육센터 · 시설관리팀</span>
+  <span>GN-FM v2.0 · 최종 동기화 <span id="syncAt" style="font-family:var(--mono)"></span></span>
+</footer>
+
+<!-- 인쇄 전용 라벨 -->
+<div class="print-label" id="printLabel">
+  <div class="pl-box">
+    <div class="pl-org">강릉국민체육센터 · 시설관리</div>
+    <div class="pl-name" id="plName"></div>
+    <div class="pl-cat" id="plCat"></div>
+    <div class="pl-qr" id="plQr"></div>
+    <div class="pl-id" id="plId"></div>
+    <div class="pl-guide">휴대폰 카메라로 QR을 스캔하면 조작 절차·점검표가 열립니다.<br>훼손 시 시설관리팀(내선 0000)으로 재발급 요청</div>
+  </div>
+</div>
+
+<script type="module">
+/* Firestore 연결 — 실패해도 앱은 기기 저장으로 정상 동작 */
+const cfg = {
+  apiKey: "AIzaSyCSt8Pu2YplfFw2sl4W1YhQfIYanvkm-mk",
+  authDomain: "smart-system-d5660.firebaseapp.com",
+  projectId: "smart-system-d5660",
+  storageBucket: "smart-system-d5660.firebasestorage.app",
+  messagingSenderId: "769691761520",
+  appId: "1:769691761520:web:a9109143dbc7a0f92badb5"
+};
+try{
+  const V = "https://www.gstatic.com/firebasejs/11.0.2/";
+  const { initializeApp } = await import(V+"firebase-app.js");
+  const fs = await import(V+"firebase-firestore.js");
+  const app = initializeApp(cfg);
+  const db  = fs.getFirestore(app);
+  window.__FB = { db, ...fs };
+  window.dispatchEvent(new Event("fb-ready"));
+}catch(e){
+  console.warn("Firestore 연결 실패 — 기기 저장으로 동작합니다.", e);
+  window.dispatchEvent(new Event("fb-fail"));
+}
+</script>
+
+<div id="modalHost"></div>
+<div class="toasts" id="toasts"></div>
+
+<!-- 그라디언트 정의 (진행률 링) -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#356AF0"/><stop offset="100%" stop-color="#0EA5B7"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<script>
+/* ============================================================
+   ICONS
+   ============================================================ */
+const I = {
+  filter:'<path d="M3 4h18l-7 8v6l-4 2v-8z"/>',
+  layers:'<path d="M12 2 2 7l10 5 10-5z"/><path d="M2 12l10 5 10-5"/><path d="M2 17l10 5 10-5"/>',
+  zap:'<path d="M13 2 3 14h8l-1 8 10-12h-8z"/>',
+  flame:'<path d="M12 22a7 7 0 0 0 7-7c0-5-4-6-4-10 0 0-3 2-4 6-1-1-1-3-1-3s-5 3-5 7a7 7 0 0 0 7 7z"/>',
+  spec:'<path d="M4 5h16M4 12h16M4 19h10"/>',
+  play:'<path d="m6 4 14 8-14 8z"/>',
+  gear:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.4-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 9 4.6 2 2 0 0 1 11 3a2 2 0 0 1 2 2v.1A1.7 1.7 0 0 0 15 6.6a1.7 1.7 0 0 0 1.9-.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V11a2 2 0 1 1 0 4z"/>',
+  check:'<path d="M20 6 9 17l-5-5"/>',
+  alert:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  send:'<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>'
+};
+const svg = (p,extra='') => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${p}</svg>`;
+
+/* ============================================================
+   DATA (원본 매뉴얼 데이터 유지 + 운영 메타 추가)
+   ============================================================ */
+const SEED_EQUIP = {
+  hair_catcher:{
+    title:"집모기 (Hair Catcher)", short:"집모기", tag:"HC-B1-01",
+    category:"수처리 시스템", icon:I.filter,
+    status:{label:"정상 가동",tone:"ok"},
+    kpi:[
+      {k:"주기",v:"15",u:"일"},
+      {k:"차기점검",v:"D-3",tone:"warn"},
+      {k:"설계압",v:"5",u:"kg/cm²"}
+    ],
+    specs:[
+      {label:"용량",val:"경영풀 185 m³/HR · 잠수풀 50 m³/HR"},
+      {label:"재질",val:"몸통 STS304 / 스트레이너 STS304"},
+      {label:"설계압력",val:"5 kg/cm²"}
+    ],
+    videoUrl:"https://www.youtube.com/results?search_query=수영장+집모기+청소",
+    instructions:[
+      "집모기 청소 시 <b>순환펌프를 정지</b>합니다.",
+      "집모기 전·후 밸브를 잠급니다.",
+      "상단 에어밸브와 하단 드레인 밸브를 열어 물을 배출합니다.",
+      "뚜껑 볼트를 풀고 내부 스텐 망의 이물질을 제거합니다.",
+      "역순으로 조립 후 에어를 빼고 전·후 밸브를 개방합니다."
+    ],
+    checklist:["15일 1회 이상 정기 소제 수행","누수 및 패킹 마모 상태 점검"],
+    troubleShooting:"이물질이 내부 스트레이너에 많이 끼면 순환수의 원활한 흐름을 방해하므로 정기적인 세척이 필요합니다.",
+    logs:[
+      {t:"정기 소제 완료 · 김OO",d:"2026-07-14 09:20",tone:"ok"},
+      {t:"패킹 마모 경미 — 경과관찰",d:"2026-06-29 08:55",tone:"warn"},
+      {t:"정기 소제 완료 · 박OO",d:"2026-06-14 09:05",tone:"ok"}
+    ]
+  },
+  multi_media_filter:{
+    title:"다층여과기 (Multi-Media Filter)", short:"다층여과기", tag:"MMF-B1-02",
+    category:"수처리 시스템", icon:I.layers,
+    status:{label:"정상 가동",tone:"ok"},
+    kpi:[
+      {k:"역세주기",v:"1",u:"일"},
+      {k:"여과속도",v:"35~40",u:"m³/h"},
+      {k:"차기점검",v:"D-0",tone:"warn"}
+    ],
+    specs:[
+      {label:"형식",val:"상부 하향류식 압력형 여과기"},
+      {label:"여과속도",val:"35 m³/HR ~ 40 m³/HR"},
+      {label:"여과재",val:"자갈 + 모래(대·중·소) + 안스라사이트 + 활성탄"}
+    ],
+    videoUrl:"#",
+    instructions:[
+      "영업 종료 후 역세와 세척은 <b>매일 1회(3분 이상)</b> 시행합니다.",
+      "역세공정이 끝나면 수동밸브를 열어 에어를 배출합니다.",
+      "밸브 작동 시에는 <b>항시 순환펌프를 끄고</b> 조작합니다."
+    ],
+    checklist:["매일 영업 종료 후 역세(3분 이상) 실시","여과기 전·후 압력차 확인"],
+    troubleShooting:"역세·세척이 미흡하면 오염물질 누적으로 여재 스케일 현상이 발생하여 수명이 단축됩니다.",
+    logs:[
+      {t:"일일 역세 3분 30초 수행",d:"2026-07-19 22:10",tone:"ok"},
+      {t:"전후 차압 0.4 kg/cm² 기록",d:"2026-07-19 22:15",tone:"info"},
+      {t:"일일 역세 3분 10초 수행",d:"2026-07-18 22:05",tone:"ok"}
+    ]
+  },
+  ozone_system:{
+    title:"오존발생장치 + 은동이온살균장치", short:"오존·살균", tag:"OZ-B1-03",
+    category:"살균 및 수질관리", icon:I.zap,
+    status:{label:"점검 필요",tone:"warn"},
+    kpi:[
+      {k:"점검주기",v:"1",u:"개월"},
+      {k:"소비전력",v:"410",u:"W"},
+      {k:"상태",v:"주의",tone:"warn"}
+    ],
+    specs:[
+      {label:"처리방식",val:"오존 + 은동이온 처리방식"},
+      {label:"전원",val:"220V / 410W (경영풀) · 220V / 280W (잠수풀)"},
+      {label:"재질",val:"HIGH PR P.V.C (또는 동등 이상)"}
+    ],
+    videoUrl:"#",
+    instructions:[
+      "오존 발생 Lamp Cleaning 및 정기 점검을 수행합니다.",
+      "pH 및 Ozone Controller 동작·보정 상태를 확인합니다.",
+      "고장 발생 시 <b>즉시 전문 업체에 수리를 의뢰</b>합니다."
+    ],
+    checklist:["월 1회 오존램프 점등 유무 확인","pH 및 잔류염소 계측기 보정"],
+    troubleShooting:"오존살균장치 고장 시 수동 염소 투입으로 전환해야 하나, 과다 투입 시 이용자 건강에 악영향을 줄 수 있으므로 신속히 정비해야 합니다.",
+    logs:[
+      {t:"오존램프 광량 저하 감지 — 업체 접수",d:"2026-07-17 14:40",tone:"warn"},
+      {t:"pH 계측기 보정 완료",d:"2026-07-01 10:20",tone:"ok"},
+      {t:"월간 점등 확인 정상",d:"2026-06-03 10:05",tone:"ok"}
+    ]
+  },
+  heat_exchanger:{
+    title:"열교환기 (Heat Exchanger)", short:"열교환기", tag:"HX-B1-04",
+    category:"급탕 · 난방 설비", icon:I.flame,
+    status:{label:"정상 가동",tone:"ok"},
+    kpi:[
+      {k:"수온",v:"28.1",u:"℃",tone:"ok"},
+      {k:"용량",v:"500k",u:"kcal/h"},
+      {k:"점검주기",v:"1",u:"개월"}
+    ],
+    specs:[
+      {label:"형식",val:"판형 열교환식"},
+      {label:"용량",val:"경영풀 500,000 kcal/HR · 잠수풀 200,000 kcal/HR"},
+      {label:"제어온도",val:"수온 27 ~ 29℃ 유지"}
+    ],
+    videoUrl:"#",
+    instructions:[
+      "전체 수영장수의 <b>50%만 열교환기를 거치게</b> 한 뒤 나머지 수영장수와 혼합하여 서서히 승온합니다.",
+      "순환펌프 정지 시에는 <b>증기 인입 밸브를 먼저 서서히 잠근 후</b> 펌프를 멈춥니다."
+    ],
+    checklist:["월 1회 결로 및 누수 여부 점검","증기 인입 밸브 동작 상태 점검"],
+    troubleShooting:"수온을 급격하게 올리면 수영수 속 염소가 빠르게 증발하며, 급격한 밸브 차단 시 워터 해머(Water Hammer) 현상이 발생할 수 있습니다.",
+    logs:[
+      {t:"결로·누수 점검 이상없음",d:"2026-07-05 11:00",tone:"ok"},
+      {t:"수온 28.1℃ 안정 유지",d:"2026-07-20 06:30",tone:"info"},
+      {t:"증기밸브 동작 점검 완료",d:"2026-06-05 11:10",tone:"ok"}
+    ]
+  }
+};
+
+/* ============================================================
+   DATA MODEL — 시설 목록 › 시설 › 설비
+   ============================================================ */
+const ICONS = {filter:'집모기/여과',layers:'여과·필터',zap:'전기·살균',flame:'열·급탕',spec:'계측·일반',gear:'기계·펌프',check:'점검',alert:'경보'};
+const ROOM_ICON = '<path d="M3 21h18"/><path d="M5 21V6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v15"/><path d="M9 9h2M13 9h2M9 13h2M13 13h2M9 17h6"/>';
+const PLUS_ICON = '<path d="M12 5v14M5 12h14"/>';
+const PEN_ICON  = '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>';
+const GEAR_ICON = I.gear;
+const LOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5"/>';
+const UNLOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 8.9-.8"/>';
+const BACK_ICON = '<path d="M15 18l-6-6 6-6"/>';
+
+const STORE_KEY='gnfm-db-v4';
+const store={
+  get(){ try{ const r=localStorage.getItem(STORE_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } },
+  set(v){ try{ localStorage.setItem(STORE_KEY,JSON.stringify(v)); return true; }catch(e){ return false; } }
+};
+
+const uid = p => p+'_'+Math.random().toString(36).slice(2,8);
+/* 샌드박스(iframe 미리보기)에서는 주소 변경·확인창이 차단될 수 있으므로 안전하게 감싼다 */
+function safeURL(q){ try{ history.replaceState(null,'',location.pathname+(q||'')); }catch(e){} }
+/* 샌드박스에서는 브라우저 confirm()이 무조건 취소로 처리되므로 자체 확인창을 쓴다 */
+let _confirmCb=null;
+function askConfirm(msg, onYes){
+  _confirmCb=onYes;
+  openModal('확인', `<p style="margin:0;font-size:14px;line-height:1.7;color:var(--fg-2)">${esc(msg)}</p>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--danger" onclick="confirmYes()">삭제</button>`);
+}
+function confirmYes(){ const cb=_confirmCb; _confirmCb=null; closeModal(); if(cb) cb(); }
+/* 아이콘 값이 키('filter')든 SVG 경로든 모두 처리 */
+const iconPath = v => (v && I[v]) ? I[v] : (v || I.gear);
+const iconKey  = v => { if(v && I[v]) return v; const k=Object.keys(I).find(x=>I[x]===v); return k||'gear'; };
+
+function seedDB(){
+  return { org:'시설 목록',
+    sites:[ { id:'arena', name:'아레나 수영장', sub:'수처리 · 급탕 계통 · 기계실 B1',
+              equipment: JSON.parse(JSON.stringify(SEED_EQUIP)) } ] };
+}
+/* ---- 손상된 데이터 자동 복구 ---- */
+function fixEq(d){
+  if(!d || typeof d!=='object') return null;
+  d.title = d.title || d.short || '이름 없는 설비';
+  d.short = d.short || d.title;
+  d.tag = d.tag || ''; d.category = d.category || '설비';
+  d.icon = d.icon || I.gear;
+  if(!d.status || typeof d.status!=='object') d.status={label:'정상 가동',tone:'ok'};
+  d.status.label = d.status.label || '정상 가동';
+  d.status.tone  = d.status.tone  || 'ok';
+  d.kpi          = Array.isArray(d.kpi)?d.kpi.filter(Boolean):[];
+  d.specs        = Array.isArray(d.specs)?d.specs.filter(Boolean):[];
+  d.instructions = Array.isArray(d.instructions)?d.instructions.filter(Boolean):[];
+  d.checklist    = Array.isArray(d.checklist)?d.checklist.filter(Boolean):[];
+  d.logs         = Array.isArray(d.logs)?d.logs.filter(Boolean):[];
+  d.videoUrl     = d.videoUrl || '#';
+  d.troubleShooting = d.troubleShooting || '특이사항 없음';
+  return d;
+}
+function fixDB(db){
+  if(!db || typeof db!=='object' || !Array.isArray(db.sites)) return null;
+  db.org = db.org || '시설 목록';
+  db.sites = db.sites.filter(st=>st && typeof st==='object').map(st=>{
+    st.id = st.id || uid('site');
+    st.name = st.name || '이름 없는 구역';
+    st.sub = st.sub || '';
+    const eq = (st.equipment && typeof st.equipment==='object') ? st.equipment : {};
+    const clean={};
+    Object.keys(eq).forEach(k=>{ const f=fixEq(eq[k]); if(f) clean[k]=f; });
+    st.equipment = clean;
+    return st;
+  });
+  return db.sites.length ? db : null;
+}
+let DB = fixDB(store.get()) || seedDB();
+
+function saveDB(){ store.set(DB); }
+
+/* ============================================================
+   CLOUD SYNC (Firestore) — 여러 기기 공유
+   master 문서: 시설·설비 정보 / logs 컬렉션: 점검 이력·특이사항
+   ============================================================ */
+let FB=null, cloudOn=false, CLOUD_LOGS=null;
+
+function setNet(txt, cls){
+  const b=document.getElementById('netBadge'), t=document.getElementById('netTxt');
+  if(t) t.textContent=txt;
+  if(b) b.className='live'+(cls?' '+cls:'');
+}
+
+function stripLogs(){
+  return DB.sites.map(st=>({
+    id:st.id, name:st.name, sub:st.sub||'',
+    equipment:Object.fromEntries(Object.entries(st.equipment||{}).map(([k,d])=>{
+      const c=Object.assign({},d); delete c.logs; return [k,c];
+    }))
+  }));
+}
+
+function pushMaster(){
+  if(!cloudOn) return;
+  FB.setDoc(FB.doc(FB.db,'gnfm','master'), {sites:stripLogs(), updatedAt:Date.now()})
+    .catch(e=>{ console.warn('저장 실패',e); toast('공유 저장에 실패했습니다. 연결을 확인하세요.','warn'); });
+}
+
+/* 클라우드 이력을 설비별로 배분 */
+function applyCloudLogs(){
+  if(!CLOUD_LOGS) return;
+  DB.sites.forEach(st=>Object.keys(st.equipment||{}).forEach(k=>{ st.equipment[k].logs=[]; }));
+  CLOUD_LOGS.forEach(l=>{
+    const st=getSite(l.site); if(!st) return;
+    const d=st.equipment&&st.equipment[l.eq]; if(!d) return;
+    d.logs.push({id:l.id, t:l.t, d:l.d, tone:l.tone||'ok', ts:l.ts||0});
+  });
+  DB.sites.forEach(st=>Object.values(st.equipment||{}).forEach(d=>{
+    d.logs.sort((a,b)=>(b.ts||0)-(a.ts||0));
+  }));
+}
+
+function cloudRefresh(){
+  if(currentSite) equipmentData=(getSite(currentSite)||{}).equipment||{};
+  if(level==='eq' && equipmentData[currentKey]){ renderSegs(); render(currentKey); }
+  else if(level==='site') enterSite(currentSite);
+  else showRoom();
+}
+
+function cloudStart(){
+  FB=window.__FB; if(!FB) return;
+  cloudOn=true; setNet('연결 중…');
+
+  FB.onSnapshot(FB.doc(FB.db,'gnfm','master'), snap=>{
+    if(snap.exists()){
+      const data=snap.data();
+      if(data && Array.isArray(data.sites) && data.sites.length){
+        DB={org:ROOT_LABEL, sites:data.sites};
+        fixDB(DB); applyCloudLogs(); saveDB(); cloudRefresh();
+      }
+    }else{
+      pushMaster();   /* 최초 1회: 현재 기기 데이터를 올림 */
+    }
+    setNet('공유중');
+  }, err=>{ console.warn(err); cloudOn=false; setNet('오프라인','is-err'); });
+
+  FB.onSnapshot(FB.collection(FB.db,'gnfm_logs'), snap=>{
+    CLOUD_LOGS=snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
+    applyCloudLogs(); saveDB(); cloudRefresh();
+  }, err=>{ console.warn(err); });
+}
+
+function addCloudLog(entry){
+  if(!cloudOn) return false;
+  FB.addDoc(FB.collection(FB.db,'gnfm_logs'),
+    {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone, ts:Date.now()})
+    .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다.','warn'); });
+  return true;
+}
+
+addEventListener('fb-ready', cloudStart);
+addEventListener('fb-fail', ()=>setNet('기기 저장','is-off'));
+function getSite(id){ return DB.sites.find(x=>x.id===id) || null; }
+
+let equipmentData = {};
+let currentSite = null;
+let level = 'room';
+
+/* ============================================================
+   VIEW ROUTING
+   ============================================================ */
+function setCrumbs(html){ document.getElementById('crumbs').innerHTML = html; }
+
+function showRoom(){
+  level='room'; currentSite=null; equipmentData={};
+  document.getElementById('listPane').hidden=false;
+  document.getElementById('detailPane').hidden=true;
+  document.querySelector('.eqbar').hidden=true;
+  setCrumbs(`<b>시설 목록</b>`);
+  document.title = 'GN-FM · 스마트 시설관리';
+  const tiles = DB.sites.map(st=>{
+    const n=Object.keys(st.equipment||{}).length;
+    return `<div class="tile" onclick="enterSite('${st.id}')">
+      <span class="tile__ico">${svg(ROOM_ICON)}</span>
+      <span class="tile__b">
+        <span class="tile__n">${esc(st.name)}</span>
+        <span class="tile__s">${esc(st.sub||'')}</span>
+        <span class="tile__tags"><span class="badge badge--info">설비 ${n}종</span></span>
+      </span>
+      ${isAdmin?`<button class="tile__edit" title="시설 편집" onclick="event.stopPropagation();openSiteEditor('${st.id}')">${svg(PEN_ICON)}</button>`:''}
+      <span class="tile__chev">›</span>
+    </div>`;
+  }).join('');
+  document.getElementById('listPane').innerHTML = `
+    <div class="pagehead"><div class="pagehead__t">
+      <h1>시설 목록</h1>
+      <p>시설을 선택하면 해당 시설의 설비 목록으로 이동합니다.</p>
+    </div></div>
+    <div class="tiles">${tiles || `<div class="empty">등록된 시설이 없습니다.${isAdmin?'<br>아래에서 첫 시설을 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}</div>`}
+      ${isAdmin?`<div class="tile is-add" onclick="openSiteEditor()">${svg(PLUS_ICON)} 시설 추가</div>`:''}
+    </div>
+    ${isAdmin?`<p style="margin:18px 2px 0;font-size:12px;color:var(--fg-4);line-height:1.7">
+      화면이 비어 보이거나 내용이 깨진 경우
+      <a onclick="resetAll()" style="color:var(--brand-600);font-weight:800;cursor:pointer">기본 설비 데이터로 되돌리기</a>
+    </p>`:''}`;
+  safeURL('');
+  try{ scrollTo({top:0}); }catch(e){}
+}
+
+function enterSite(id){
+  const st=getSite(id); if(!st) return showRoom();
+  level='site'; currentSite=id; equipmentData=st.equipment||{};
+  document.getElementById('listPane').hidden=false;
+  document.getElementById('detailPane').hidden=true;
+  document.querySelector('.eqbar').hidden=true;
+  setCrumbs(`<button class="cb" onclick="showRoom()" aria-label="뒤로">${svg(BACK_ICON)}</button>
+    <b>${esc(st.name)}</b>`);
+  document.title = `${st.name} · GN-FM 스마트 시설관리`;
+  const keys=Object.keys(equipmentData);
+  const tiles = keys.map(k=>{
+    const d=equipmentData[k];
+    const tone=(d.status&&d.status.tone==='ok')?'ok':'warn';
+    return `<div class="tile" onclick="openEquipment('${k}')">
+      <span class="tile__ico">${svg(iconPath(d.icon))}</span>
+      <span class="tile__b">
+        <span class="tile__n">${esc(d.short||d.title)}</span>
+        <span class="tile__s">${esc(d.category||'')} · ${esc(d.tag||'')}</span>
+        <span class="tile__tags">
+          <span class="badge badge--${tone==='ok'?'ok':'warn'}">${esc((d.status&&d.status.label)||'상태 미지정')}</span>
+          <span class="badge badge--info">점검 ${(d.checklist||[]).length}항목</span>
+        </span>
+      </span>
+      ${isAdmin?`<button class="tile__edit" title="설비 편집" onclick="event.stopPropagation();openEqEditor('${k}')">${svg(PEN_ICON)}</button>`:''}
+      <span class="tile__chev">›</span>
+    </div>`;
+  }).join('');
+  document.getElementById('listPane').innerHTML = `
+    <div class="pagehead"><div class="pagehead__t">
+      <h1>${esc(st.name)}</h1>
+      <p>${esc(st.sub||'')}${st.sub?' · ':''}설비를 선택하면 사양·조작 매뉴얼·점검표가 열립니다.</p>
+    </div></div>
+    <div class="tiles">${tiles || `<div class="empty">이 시설에 등록된 설비가 없습니다.${isAdmin?'<br>아래에서 첫 설비를 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}</div>`}
+      ${isAdmin?`<div class="tile is-add" onclick="openEqEditor()">${svg(PLUS_ICON)} 설비 추가</div>`:''}
+    </div>`;
+  safeURL('?site='+id);
+  try{ scrollTo({top:0}); }catch(e){}
+}
+
+function openEquipment(key){
+  if(!equipmentData[key]){
+    toast('해당 설비를 찾을 수 없습니다.','warn');
+    return currentSite ? enterSite(currentSite) : showRoom();
+  }
+  level='eq'; currentKey=key;
+  const st=getSite(currentSite);
+  document.getElementById('listPane').hidden=true;
+  document.getElementById('detailPane').hidden=false;
+  document.querySelector('.eqbar').hidden=false;
+  setCrumbs(`<button class="cb" onclick="enterSite('${currentSite}')" aria-label="뒤로">${svg(BACK_ICON)}</button>
+    <a onclick="enterSite('${currentSite}')">${esc(st?st.name:'')}</a><span class="sep">›</span>
+    <b id="crumbNow">${esc(equipmentData[key].short||'')}</b>`);
+  renderSegs(); render(key);
+  safeURL('?site='+currentSite+'&eq='+key);
+  try{ scrollTo({top:0}); }catch(e){}
+}
+
+const esc = t => String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let currentKey = 'hair_catcher';
+
+/* ============================================================
+   RENDER
+   ============================================================ */
+function renderSegs(){
+  document.getElementById('segs').innerHTML = Object.entries(equipmentData).filter(([k,d])=>d).map(([k,d])=>`
+    <button class="seg" role="tab" aria-selected="${k===currentKey}" data-key="${k}" onclick="selectEquipment('${k}')">
+      ${svg(iconPath(d.icon),'class="seg__ico"')}${d.short}
+    </button>`).join('');
+}
+
+function render(key){
+  const d = fixEq(equipmentData[key]);
+  if(!d){
+    toast('설비 정보를 불러오지 못해 목록으로 돌아갑니다.','warn');
+    return currentSite ? enterSite(currentSite) : showRoom();
+  }
+  const cn=document.getElementById('crumbNow'); if(cn) cn.textContent = d.short;
+  document.title = `${d.short} · GN-FM 스마트 시설관리`;
+
+  const kpiHtml = d.kpi.map(x=>`
+    <div class="stat">
+      <div class="stat__k">${x.k}</div>
+      <div class="stat__v ${x.tone?'is-'+x.tone:''}">${x.v}${x.u?`<small>${x.u}</small>`:''}</div>
+    </div>`).join('');
+
+  const specsHtml = d.specs.map(s=>`
+    <div class="spec"><div class="spec__k">${s.label}</div><div class="spec__v">${s.val}</div></div>`).join('');
+
+  const stepsHtml = d.instructions.map((t,i)=>`
+    <li class="step"><div class="step__n">${i+1}</div><div class="step__t">${t}</div></li>`).join('');
+
+  const checksHtml = d.checklist.map((t,i)=>`
+    <label class="check">
+      <input type="checkbox" data-check onchange="updateProgress()">
+      <span class="check__box">${svg(I.check)}</span>
+      <span class="check__t">${t}</span>
+    </label>`).join('');
+
+  const hasVideo = d.videoUrl && d.videoUrl !== '#';
+
+  document.getElementById('detail').innerHTML = `
+    <!-- HERO -->
+    <div class="hero anim">
+      <div class="hero__banner">
+        <div class="hero__row">
+          <div class="hero__glyph">${svg(iconPath(d.icon))}</div>
+          <div style="flex:1;min-width:0">
+            <div class="hero__eyebrow">
+              <span class="badge badge--glass">${d.category}</span>
+              <span class="badge badge--glass"><span class="badge__dot" style="background:${d.status.tone==='ok'?'#3EE58F':'#FFC65C'}"></span>${d.status.label}</span>
+            </div>
+            <h2>${d.title}</h2>
+            <div class="hero__id">
+              ${svg('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M14 3h7v7M3 14h7v7"/>','style="width:13px;height:13px"')}
+              ${d.tag} · 기계실 B1
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="hero__stats">${kpiHtml}</div>
+    </div>
+
+    <!-- SPECS -->
+    <div class="card anim">
+      <div class="card__head">
+        <div class="card__ico">${svg(I.spec)}</div>
+        <div class="card__title">주요 사양</div>
+        <span class="card__meta">Specification</span>
+      </div>
+      <div class="card__body"><div class="specs">${specsHtml}</div></div>
+    </div>
+
+    <!-- VIDEO -->
+    <div class="card anim no-print">
+      <div class="card__head">
+        <div class="card__ico is-danger">${svg(I.play)}</div>
+        <div class="card__title">시청각 조작 매뉴얼</div>
+        <span class="badge ${hasVideo?'badge--danger':'badge--info'}">${hasVideo?'영상 있음':'준비중'}</span>
+      </div>
+      <div class="card__body">
+        ${hasVideo
+          ? `<a class="btn btn--video" href="${d.videoUrl}" target="_blank" rel="noopener">${svg(I.play)}현장 조작법 숏폼 영상 시청</a>`
+          : `<button class="btn btn--ghost" onclick="toast('해당 설비의 영상 매뉴얼은 준비 중입니다.','warn')">${svg(I.play)}영상 매뉴얼 준비 중</button>`}
+      </div>
+    </div>
+
+    <!-- PROCEDURE -->
+    <div class="card anim">
+      <div class="card__head">
+        <div class="card__ico">${svg(I.gear)}</div>
+        <div class="card__title">유지관리 및 운전 절차</div>
+        <span class="card__meta">${d.instructions.length} STEP</span>
+      </div>
+      <div class="card__body">
+        <ol class="steps">${stepsHtml}</ol>
+      </div>
+      <div class="card__foot">
+        <div class="alert">
+          ${svg(I.alert)}
+          <div>
+            <div class="alert__t">주의 · 고장 조치</div>
+            <div class="alert__d">${d.troubleShooting}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHECKLIST -->
+    <div class="card anim no-print">
+      <div class="card__head">
+        <div class="card__ico is-ok">${svg(I.check)}</div>
+        <div class="card__title">모바일 현장 점검표</div>
+        <span class="card__meta">e-Checklist</span>
+      </div>
+      <div class="card__body">
+        <div class="progressrow">
+          <div class="ring">
+            <svg viewBox="0 0 56 56">
+              <circle class="bgc" cx="28" cy="28" r="24"/>
+              <circle class="fgc" id="ringFg" cx="28" cy="28" r="24" stroke-dasharray="150.8" stroke-dashoffset="150.8"/>
+            </svg>
+            <div class="ring__num" id="ringNum">0%</div>
+          </div>
+          <div class="progressrow__meta">
+            <div class="progressrow__t" id="progT">점검 항목 0 / ${d.checklist.length} 완료</div>
+            <div class="progressrow__s">모든 항목 확인 후 결과를 제출하세요.</div>
+          </div>
+        </div>
+        <div class="checks">${checksHtml}</div>
+      </div>
+      <div class="card__foot">
+        <button class="btn btn--primary" id="submitBtn" onclick="submitChecklist()">${svg(I.send)}점검 결과 제출 · 디지털 이력 저장</button>
+      </div>
+    </div>
+
+    <!-- 특이사항 -->
+    <div class="card anim no-print">
+      <div class="card__head">
+        <div class="card__ico is-warn">${svg(I.alert)}</div>
+        <div class="card__title">특이사항 기록</div>
+        <span class="card__meta">Issue Report</span>
+      </div>
+      <div class="card__body">
+        <textarea class="noteta" id="noteInput" placeholder="점검 중 발견한 이상 징후, 누수·소음·진동, 임시 조치 내용 등을 자유롭게 적어 주세요."></textarea>
+      </div>
+      <div class="card__foot">
+        <button class="btn btn--primary" onclick="submitNote()">${svg(I.send)}특이사항 등록</button>
+      </div>
+    </div>
+  `;
+
+  renderLogs(d);
+  updateProgress();
+  generateQRCode();
+}
+
+function renderLogs(d){
+  document.getElementById('logs').innerHTML = d.logs.length
+    ? d.logs.map((l,i)=>`
+    <div class="log">
+      <span class="log__dot ${l.tone!=='ok'?'is-'+l.tone:''}"></span>
+      <div><div class="log__t">${esc(l.t)}</div><div class="log__d">${esc(l.d)}</div></div>
+      ${isAdmin?`<button class="log__del" title="이력 삭제" onclick="deleteLog(${i})" aria-label="이력 삭제">✕</button>`:''}
+    </div>`).join('')
+    : `<p style="margin:6px 0;font-size:12.5px;color:var(--fg-4)">기록된 점검 이력이 없습니다.</p>`;
+  document.getElementById('logCount').textContent = d.logs.length + '건';
+  syncAdminBtn();
+}
+
+/* ============================================================
+   관리자 모드 — 이력 삭제 권한
+   ============================================================ */
+let isAdmin = false;
+let ADMIN_PIN = '1234';
+let BASE_URL = '';
+try{ const sp=localStorage.getItem('gnfm-pin'); if(sp) ADMIN_PIN=sp; }catch(e){}
+try{ const bu=localStorage.getItem('gnfm-base'); if(bu) BASE_URL=bu; }catch(e){}
+
+function normBase(u){
+  u=(u||'').trim().replace(/[?#].*$/,'');
+  if(!u) return '';
+  if(!/^https?:\/\//i.test(u)) u='https://'+u;
+  if(!/\.html?$/i.test(u) && !u.endsWith('/')) u+='/';
+  return u;
+}
+
+/* ---- 관리자 설정 ---- */
+function openSettings(){
+  if(!requireAdmin()) return;
+  openModal('관리자 설정', `
+    <div class="fld"><label>공개 웹 주소 (QR용)</label>
+      <input id="setBase" value="${esc(BASE_URL)}" placeholder="https://아이디.github.io/저장소이름/">
+      <span class="hint">현장 QR이 이 주소로 만들어집니다. 비워 두면 지금 열려 있는 주소를 사용하는데, 미리보기 화면에서는 스캔이 되지 않습니다.</span></div>
+    <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
+      <label>관리자 비밀번호 변경</label>
+      <input id="setPinOld" type="password" placeholder="현재 비밀번호">
+      <input id="setPinNew" type="password" placeholder="새 비밀번호 (4자 이상)">
+      <input id="setPinNew2" type="password" placeholder="새 비밀번호 확인">
+      <span class="hint">변경하지 않으려면 비워 두세요.</span></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" onclick="saveSettings()">저장</button>`);
+}
+function saveSettings(){
+  if(!requireAdmin()) return;
+  const nb=normBase(val('setBase'));
+  const o=val('setPinOld'), n1=val('setPinNew'), n2=val('setPinNew2');
+  if(n1||n2||o){
+    if(o!==ADMIN_PIN) return toast('현재 비밀번호가 올바르지 않습니다.','warn');
+    if(n1.length<4)   return toast('새 비밀번호는 4자 이상이어야 합니다.','warn');
+    if(n1!==n2)       return toast('새 비밀번호가 서로 일치하지 않습니다.','warn');
+    ADMIN_PIN=n1; try{ localStorage.setItem('gnfm-pin',n1); }catch(e){}
+  }
+  BASE_URL=nb; try{ nb?localStorage.setItem('gnfm-base',nb):localStorage.removeItem('gnfm-base'); }catch(e){}
+  closeModal();
+  if(level==='eq') generateQRCode();
+  toast('설정을 저장했습니다.');
+}
+
+function syncAdminBtn(){
+  const sb=document.getElementById('settingsBtn');
+  if(sb){ sb.hidden=!isAdmin; sb.innerHTML=svg(GEAR_ICON)+'<span>설정</span>'; }
+  document.querySelectorAll('[data-admin-btn]').forEach(b=>{
+    const top = b.classList.contains('adminbtn--top');
+    b.className = 'adminbtn'+(top?' adminbtn--top':'')+(isAdmin?' on':'');
+    b.title = isAdmin?'관리자 모드 해제':'관리자 로그인';
+    b.innerHTML = (isAdmin?svg(UNLOCK_ICON):svg(LOCK_ICON))+'<span>'+(isAdmin?'관리자':'관리자')+'</span>';
+  });
+}
+/* 현재 화면을 권한에 맞게 다시 그린다 */
+function refreshView(){
+  if(level==='room') showRoom();
+  else if(level==='site') enterSite(currentSite);
+  else { const d=equipmentData[currentKey]; if(d) renderLogs(d); }
+  syncAdminBtn();
+}
+function requireAdmin(){
+  if(isAdmin) return true;
+  toast('관리자만 수정할 수 있습니다.','warn');
+  return false;
+}
+function toggleAdmin(){
+  if(isAdmin){
+    isAdmin=false; closeModal(); refreshView();
+    return toast('관리자 모드를 해제했습니다.');
+  }
+  openModal('관리자 확인', `
+    <div class="fld"><label>관리자 비밀번호</label>
+      <input id="pinInput" type="password" inputmode="numeric" placeholder="비밀번호를 입력하세요">
+      <span class="hint">점검 이력을 삭제하려면 관리자 확인이 필요합니다.</span></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" onclick="checkPin()">확인</button>`);
+  setTimeout(()=>{
+    const el=document.getElementById('pinInput'); if(!el) return;
+    el.focus();
+    el.addEventListener('keydown',e=>{ if(e.key==='Enter') checkPin(); });
+  },60);
+}
+function checkPin(){
+  const v=(document.getElementById('pinInput')||{value:''}).value;
+  if(v!==ADMIN_PIN) return toast('비밀번호가 올바르지 않습니다.','warn');
+  isAdmin=true; closeModal(); refreshView();
+  toast('관리자 모드입니다. 시설·설비 편집과 이력 삭제가 가능합니다.');
+}
+function deleteLog(i){
+  if(!isAdmin) return toast('관리자만 삭제할 수 있습니다.','warn');
+  const d=equipmentData[currentKey]; if(!d||!d.logs[i]) return;
+  const target=d.logs[i];
+  askConfirm(`"${target.t}" 이력을 삭제할까요?`, ()=>{
+    if(cloudOn && target.id){
+      FB.deleteDoc(FB.doc(FB.db,'gnfm_logs',target.id))
+        .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
+    }else{
+      d.logs.splice(i,1); saveDB(); renderLogs(d);
+    }
+    toast('점검 이력을 삭제했습니다.','warn');
+  });
+}
+
+/* ---- 특이사항 등록 ---- */
+function submitNote(){
+  const el=document.getElementById('noteInput'); if(!el) return;
+  const txt=el.value.trim();
+  if(!txt) return toast('특이사항 내용을 입력해 주세요.','warn');
+  const d=equipmentData[currentKey]; if(!d) return;
+  const entry={t:'특이사항 · '+txt, d:stamp(), tone:'warn'};
+  if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
+  el.value='';
+  toast('특이사항을 이력에 기록했습니다.');
+}
+
+function selectEquipment(key){
+  if(!equipmentData[key] || key===currentKey) return;
+  currentKey = key;
+  document.querySelectorAll('.seg').forEach(b=>{
+    const on = b.dataset.key===key;
+    b.setAttribute('aria-selected', on);
+    if(on) b.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+  });
+  const cn=document.getElementById('crumbNow'); if(cn) cn.textContent=equipmentData[key].short;
+  render(key);
+  safeURL('?site='+currentSite+'&eq='+key);
+}
+
+/* ---- 스와이프로 설비 전환 (모바일) ---- */
+function shiftEquipment(dir){
+  if(level!=='eq') return false;
+  const keys=Object.keys(equipmentData);
+  const i=keys.indexOf(currentKey)+dir;
+  if(i<0||i>=keys.length){ return false; }
+  selectEquipment(keys[i]);
+  return true;
+}
+(function swipe(){
+  let x0=0,y0=0,t0=0,lock=null;
+  const main=document.querySelector('.wrap');
+  main.addEventListener('touchstart',e=>{
+    if(e.touches.length!==1) return;
+    x0=e.touches[0].clientX; y0=e.touches[0].clientY; t0=Date.now(); lock=null;
+  },{passive:true});
+  main.addEventListener('touchmove',e=>{
+    if(e.touches.length!==1) return;
+    if(lock===null){
+      const dx=e.touches[0].clientX-x0, dy=e.touches[0].clientY-y0;
+      if(Math.abs(dx)>12||Math.abs(dy)>12) lock = Math.abs(dx)>Math.abs(dy)*1.6 ? 'x' : 'y';
+    }
+    // 가로 제스처가 확정되면 브라우저의 '뒤로가기 스와이프'를 막는다
+    if(lock==='x' && e.cancelable) e.preventDefault();
+  },{passive:false});
+  main.addEventListener('touchend',e=>{
+    if(lock!=='x') return;
+    const dx=e.changedTouches[0].clientX-x0;
+    const dt=Date.now()-t0;
+    if(Math.abs(dx)<60 || dt>700) return;
+    const moved=shiftEquipment(dx<0?1:-1);
+    if(moved){
+      document.getElementById('swipeHint').classList.add('is-gone');
+      try{localStorage.setItem('gnfm-swiped','1')}catch(err){}
+      scrollTo({top:0,behavior:'smooth'});
+    }else{
+      toast(dx<0?'마지막 설비입니다.':'첫 번째 설비입니다.','warn');
+    }
+  },{passive:true});
+})();
+
+/* 키보드 ←/→ 전환 */
+addEventListener('keydown',e=>{
+  if(e.target instanceof Element && e.target.closest('input,select,textarea,button,a')) return;
+  if(e.key==='ArrowRight') shiftEquipment(1);
+  if(e.key==='ArrowLeft') shiftEquipment(-1);
+});
+
+/* ============================================================
+   CHECKLIST PROGRESS
+   ============================================================ */
+function updateProgress(){
+  const boxes=[...document.querySelectorAll('[data-check]')];
+  if(!boxes.length) return;
+  const done=boxes.filter(b=>b.checked).length;
+  const pct=Math.round(done/boxes.length*100);
+  const C=2*Math.PI*24;
+  const fg=document.getElementById('ringFg');
+  if(fg){ fg.setAttribute('stroke-dasharray',C); fg.setAttribute('stroke-dashoffset', C*(1-pct/100)); }
+  document.getElementById('ringNum').textContent = pct+'%';
+  document.getElementById('progT').textContent = `점검 항목 ${done} / ${boxes.length} 완료`;
+}
+
+function submitChecklist(){
+  const boxes=[...document.querySelectorAll('[data-check]')];
+  const done=boxes.filter(b=>b.checked).length;
+  if(done<boxes.length){
+    toast(`미완료 항목이 ${boxes.length-done}건 있습니다.`,'warn');
+    return;
+  }
+  const d=equipmentData[currentKey];
+  const entry={t:'현장 점검 완료 · 담당자 제출',d:stamp(),tone:'ok'};
+  if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
+  boxes.forEach(b=>b.checked=false);
+  updateProgress();
+  toast('점검 결과가 서버에 기록되었습니다.');
+}
+
+
+/* ============================================================
+   EDITOR — 구역/설비 직접 추가·편집
+   ============================================================ */
+function closeModal(){ document.getElementById('modalHost').innerHTML=''; }
+function openModal(title, bodyHtml, footHtml){
+  document.getElementById('modalHost').innerHTML = `
+    <div class="modal" onclick="if(event.target===this)closeModal()">
+      <div class="sheet" role="dialog" aria-modal="true">
+        <div class="sheet__h"><h3>${esc(title)}</h3>
+          <button class="sheet__x" onclick="closeModal()" aria-label="닫기">✕</button></div>
+        <div class="sheet__b">${bodyHtml}</div>
+        <div class="sheet__f">${footHtml}</div>
+      </div>
+    </div>`;
+}
+const val = id => (document.getElementById(id)||{value:''}).value.trim();
+const lines = id => val(id).split('\n').map(x=>x.trim()).filter(Boolean);
+
+/* ---------- 구역 ---------- */
+function openSiteEditor(id){
+  if(!requireAdmin()) return;
+  const st = id?getSite(id):null;
+  openModal(st?'시설 편집':'새 시설 추가', `
+    <div class="fld"><label>시설 이름</label>
+      <input id="sName" value="${esc(st?st.name:'')}" placeholder="아레나 수영장"></div>
+    <div class="fld"><label>설명</label>
+      <input id="sSub" value="${esc(st?st.sub:'')}" placeholder="수처리 · 급탕 계통 · 기계실 B1">
+      <span class="hint">목록 카드에 작게 표시됩니다.</span></div>`,
+    `${st?`<button class="btn btn--danger" onclick="deleteSite('${st.id}')">삭제</button>`:''}
+     <button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" onclick="saveSite(${st?`'${st.id}'`:'null'})">저장</button>`);
+  setTimeout(()=>document.getElementById('sName').focus(),60);
+}
+function saveSite(id){
+  if(!requireAdmin()) return;
+  const name=val('sName');
+  if(!name) return toast('시설 이름을 입력해 주세요.','warn');
+  if(id){ const st=getSite(id); st.name=name; st.sub=val('sSub'); }
+  else { DB.sites.push({id:uid('site'),name,sub:val('sSub'),equipment:{}}); }
+  saveDB(); pushMaster(); closeModal();
+  level==='room'?showRoom():enterSite(id||DB.sites[DB.sites.length-1].id);
+  toast(id?'시설 정보를 수정했습니다.':'새 시설을 추가했습니다.');
+}
+function deleteSite(id){
+  if(!requireAdmin()) return;
+  const st=getSite(id); if(!st) return;
+  askConfirm(`"${st.name}" 시설과 그 안의 설비를 모두 삭제할까요?`, ()=>{
+    DB.sites=DB.sites.filter(x=>x.id!==id); saveDB(); pushMaster(); showRoom();
+    toast('시설을 삭제했습니다.','warn');
+  });
+}
+
+/* ---------- 설비 ---------- */
+function openEqEditor(key){
+  if(!requireAdmin()) return;
+  const d = key?equipmentData[key]:null;
+  const j = (a,f)=> (a||[]).map(f).join('\n');
+  const iconOpts = Object.keys(ICONS).map(k=>
+    `<option value="${k}" ${d&&iconKey(d.icon)===k?'selected':''}>${ICONS[k]}</option>`).join('');
+  openModal(d?'설비 편집':'새 설비 추가', `
+    <div class="frow">
+      <div class="fld"><label>설비명</label>
+        <input id="eTitle" value="${esc(d?d.title:'')}" placeholder="집모기 (Hair Catcher)"></div>
+      <div class="fld"><label>짧은 이름</label>
+        <input id="eShort" value="${esc(d?d.short:'')}" placeholder="집모기"></div>
+    </div>
+    <div class="frow">
+      <div class="fld"><label>설비 태그</label>
+        <input id="eTag" value="${esc(d?d.tag:'')}" placeholder="HC-B1-01"></div>
+      <div class="fld"><label>분류</label>
+        <input id="eCat" value="${esc(d?d.category:'')}" placeholder="수처리 시설"></div>
+    </div>
+    <div class="frow">
+      <div class="fld"><label>아이콘</label><select id="eIcon">${iconOpts}</select></div>
+      <div class="fld"><label>상태</label>
+        <select id="eTone">
+          <option value="ok" ${d&&d.status&&d.status.tone==='ok'?'selected':''}>정상 (초록)</option>
+          <option value="warn" ${d&&d.status&&d.status.tone==='warn'?'selected':''}>주의 (노랑)</option>
+        </select></div>
+    </div>
+    <div class="fld"><label>상태 문구</label>
+      <input id="eStatus" value="${esc(d&&d.status?d.status.label:'정상 가동')}" placeholder="정상 가동"></div>
+
+    <div class="fld"><label>상단 요약 지표</label>
+      <textarea id="eKpi" placeholder="주기 | 15 | 일">${esc(j(d&&d.kpi,x=>`${x.k} | ${x.v} | ${x.u||''}`))}</textarea>
+      <span class="hint">한 줄에 하나씩. <b>항목 | 값 | 단위</b> 형식이며 3개까지 잘 보입니다.</span></div>
+
+    <div class="fld"><label>주요 사양</label>
+      <textarea id="eSpec" placeholder="용량 | 경영풀 185 m³/HR">${esc(j(d&&d.specs,x=>`${x.label} | ${x.val}`))}</textarea>
+      <span class="hint">한 줄에 하나씩. <b>항목 | 내용</b> 형식.</span></div>
+
+    <div class="fld"><label>영상 매뉴얼 주소</label>
+      <input id="eVideo" value="${esc(d&&d.videoUrl&&d.videoUrl!=='#'?d.videoUrl:'')}" placeholder="https://... (없으면 비워두세요)"></div>
+
+    <div class="fld"><label>유지관리 및 운전 절차</label>
+      <textarea id="eStep" placeholder="집모기 청소 시 순환펌프를 정지합니다.">${esc((d&&d.instructions||[]).join('\n'))}</textarea>
+      <span class="hint">한 줄이 한 단계입니다. 번호는 자동으로 붙습니다.</span></div>
+
+    <div class="fld"><label>주의 · 고장 조치</label>
+      <textarea id="eTrouble" style="min-height:64px" placeholder="이물질이 스트레이너에 끼면 순환수 흐름을 방해합니다.">${esc(d?d.troubleShooting:'')}</textarea></div>
+
+    <div class="fld"><label>현장 점검표</label>
+      <textarea id="eCheck" placeholder="15일 1회 이상 정기 소제 수행">${esc((d&&d.checklist||[]).join('\n'))}</textarea>
+      <span class="hint">한 줄이 체크 항목 하나입니다.</span></div>`,
+    `${d?`<button class="btn btn--danger" onclick="deleteEq('${key}')">삭제</button>`:''}
+     <button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" onclick="saveEq(${d?`'${key}'`:'null'})">저장</button>`);
+  setTimeout(()=>document.getElementById('eTitle').focus(),60);
+}
+function saveEq(key){
+  if(!requireAdmin()) return;
+  const title=val('eTitle');
+  if(!title) return toast('설비명을 입력해 주세요.','warn');
+  const kpi = lines('eKpi').map(l=>{ const a=l.split('|').map(x=>x.trim());
+    return {k:a[0]||'', v:a[1]||'', u:a[2]||''}; }).slice(0,3);
+  const specs = lines('eSpec').map(l=>{ const a=l.split('|').map(x=>x.trim());
+    return {label:a[0]||'', val:a.slice(1).join(' | ')||''}; });
+  const video=val('eVideo');
+  const obj = {
+    title, short: val('eShort')||title, tag: val('eTag'), category: val('eCat')||'설비',
+    icon: val('eIcon')||'gear',
+    status:{label: val('eStatus')||'정상 가동', tone: val('eTone')||'ok'},
+    kpi, specs, videoUrl: video||'#',
+    instructions: lines('eStep'), checklist: lines('eCheck'),
+    troubleShooting: val('eTrouble')||'특이사항 없음',
+    logs: key&&equipmentData[key]?equipmentData[key].logs:[{t:'설비 등록',d:stamp(),tone:'ok'}]
+  };
+  const st=getSite(currentSite); if(!st) return;
+  const k = key || uid('eq');
+  st.equipment[k]=obj; equipmentData=st.equipment;
+  saveDB(); pushMaster(); closeModal();
+  if(level==='eq'&&key){ renderSegs(); render(k); }
+  else enterSite(currentSite);
+  toast(key?'설비 정보를 수정했습니다.':'새 설비를 추가했습니다.');
+}
+function deleteEq(key){
+  if(!requireAdmin()) return;
+  const d=equipmentData[key]; if(!d) return;
+  askConfirm(`"${d.short||d.title}" 설비를 삭제할까요?`, ()=>{
+    const st=getSite(currentSite); delete st.equipment[key]; equipmentData=st.equipment;
+    saveDB(); pushMaster(); enterSite(currentSite);
+    toast('설비를 삭제했습니다.','warn');
+  });
+}
+function resetAll(){
+  if(!requireAdmin()) return;
+  askConfirm('직접 추가·수정한 내용이 모두 지워지고 기본 설비 데이터로 돌아갑니다. 진행할까요?', ()=>{
+    try{ localStorage.removeItem(STORE_KEY); }catch(e){}
+    DB = seedDB(); saveDB(); pushMaster(); showRoom();
+    toast('기본 데이터로 초기화했습니다.');
+  });
+}
+addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
+
+/* ============================================================
+   QR
+   ============================================================ */
+function targetUrl(){
+  const q = `?site=${currentSite}&eq=${currentKey}`;
+  if(BASE_URL) return BASE_URL + q;
+  if(/^https?:$/i.test(location.protocol)) return `${location.origin}${location.pathname}${q}`;
+  return q;  /* file:// 또는 미리보기 등 스캔 불가 환경 */
+}
+function qrScannable(){ return !!BASE_URL || /^https?:$/i.test(location.protocol); }
+function generateQRCode(){
+  const el=document.getElementById('qrcode');
+  el.innerHTML='';
+  new QRCode(el,{text:targetUrl(),width:180,height:180,colorDark:'#0E1526',colorLight:'#FFFFFF',correctLevel:QRCode.CorrectLevel.M});
+  const u=document.getElementById('qrUrl');
+  u.textContent=targetUrl();
+  const warn=document.getElementById('qrWarn');
+  if(warn) warn.hidden = qrScannable();
+}
+function copyLink(){
+  navigator.clipboard.writeText(targetUrl())
+    .then(()=>toast('설비 링크를 복사했습니다.'))
+    .catch(()=>toast('복사에 실패했습니다.','warn'));
+}
+function printLabel(){
+  const d=equipmentData[currentKey];
+  document.getElementById('plName').textContent=d.title;
+  document.getElementById('plCat').textContent=d.category+' · 기계실 B1';
+  document.getElementById('plId').textContent=d.tag;
+  const q=document.getElementById('plQr'); q.innerHTML='';
+  new QRCode(q,{text:targetUrl(),width:200,height:200,colorDark:'#000000',colorLight:'#FFFFFF',correctLevel:QRCode.CorrectLevel.H});
+  setTimeout(()=>window.print(),260);
+}
+
+/* ============================================================
+   TOAST / THEME / UTIL
+   ============================================================ */
+function toast(msg,tone){
+  const wrap=document.getElementById('toasts');
+  const el=document.createElement('div');
+  el.className='toast';
+  el.innerHTML=`<span class="toast__ico ${tone==='warn'?'is-warn':''}">${svg(tone==='warn'?I.alert:I.check)}</span><span>${msg}</span>`;
+  wrap.appendChild(el);
+  setTimeout(()=>{el.classList.add('is-out');setTimeout(()=>el.remove(),300)},2600);
+}
+
+function stamp(){
+  const n=new Date(),p=x=>String(x).padStart(2,'0');
+  return `${n.getFullYear()}-${p(n.getMonth()+1)}-${p(n.getDate())} ${p(n.getHours())}:${p(n.getMinutes())}`;
+}
+
+document.getElementById('themeBtn').addEventListener('click',()=>{
+  const cur=document.documentElement.getAttribute('data-theme');
+  const next=cur==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme',next);
+  try{localStorage.setItem('gnfm-theme',next)}catch(e){}
+  if(level==='eq') generateQRCode();
+});
+
+(function init(){
+  try{
+    const saved=localStorage.getItem('gnfm-theme');
+    if(saved) document.documentElement.setAttribute('data-theme',saved);
+    else if(matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme','dark');
+  }catch(e){}
+
+  document.getElementById('syncAt').textContent=stamp();
+  try{ if(localStorage.getItem('gnfm-swiped')) document.getElementById('swipeHint').classList.add('is-gone'); }catch(e){}
+
+  syncAdminBtn();
+
+  const q=new URLSearchParams(location.search);
+  const sid=q.get('site'), eq=q.get('eq');
+  if(sid && getSite(sid)){
+    enterSite(sid);
+    if(eq && equipmentData[eq]) openEquipment(eq);
+  } else {
+    showRoom();
+  }
+})();
+</script>
+</body>
+</html>
