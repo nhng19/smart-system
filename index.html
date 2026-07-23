@@ -2148,8 +2148,8 @@ function resolveRole(user){
       closeModal(); refreshView();
       if(myRole==='super') migrateOldMaster();
     }else{
-      FB.getDocs(FB.query(FB.collection(FB.db,'gnfm_users'), FB.limit(1))).then(all=>{
-        if(all.empty){
+      FB.getDoc(FB.doc(FB.db,'gnfm_meta','bootstrap')).then(bs=>{
+        if(!bs.exists()){
           FB.setDoc(FB.doc(FB.db,'gnfm_users',email), {role:'super', sites:[], createdAt:Date.now()})
             .then(()=>FB.setDoc(FB.doc(FB.db,'gnfm_meta','bootstrap'), {done:true, by:email, at:Date.now()}))
             .then(()=>migrateOldMaster())      /* 부트스트랩(내 super 문서) 생성이 서버에 확정된 뒤에 이전 실행 */
