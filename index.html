@@ -1664,8 +1664,8 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
         </svg>
       </div>
       <div class="brand__text">
-        <div class="brand__title">스마트 시설관리</div>
-        <div class="brand__sub">GN-FM · Facility Ops Platform</div>
+        <div class="brand__title">GN-FM</div>
+        <div class="brand__sub">스마트 시설관리</div>
       </div>
     </div>
     <div class="appbar__spacer"></div>
@@ -1759,19 +1759,19 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
 </main>
 
 <footer class="foot no-print">
-  <span>© 2026 강릉국민체육센터 · 시설관리팀</span>
+  <span>© 2026 스마트 시설관리</span>
   <span>GN-FM v2.0 · 최종 동기화 <span id="syncAt" style="font-family:var(--mono)"></span></span>
 </footer>
 
 <!-- 인쇄 전용 라벨 -->
 <div class="print-label" id="printLabel">
   <div class="pl-box">
-    <div class="pl-org">강릉국민체육센터 · 시설관리</div>
+    <div class="pl-org">스마트 시설관리</div>
     <div class="pl-name" id="plName"></div>
     <div class="pl-cat" id="plCat"></div>
     <div class="pl-qr" id="plQr"></div>
     <div class="pl-id" id="plId"></div>
-    <div class="pl-guide">휴대폰 카메라로 QR을 스캔하면 조작 절차·점검표가 열립니다.<br>훼손 시 시설관리팀(내선 0000)으로 재발급 요청</div>
+    <div class="pl-guide">휴대폰 카메라로 QR을 스캔하면 조작 절차·점검표가 열립니다.</div>
   </div>
 </div>
 
@@ -1998,7 +1998,7 @@ const iconKey  = v => { if(v && I[v]) return v; const k=Object.keys(I).find(x=>I
 
 function seedDB(){
   return { org:'시설 목록',
-    sites:[ { id:'arena', name:'아레나 수영장', sub:'수처리 · 급탕 계통 · 기계실 B1',
+    sites:[ { id:'arena', name:'아레나 수영장', sub:'수처리 · 급탕 계통',
               equipment: JSON.parse(JSON.stringify(SEED_EQUIP)) } ] };
 }
 /* ---- 손상된 데이터 자동 복구 ---- */
@@ -2336,7 +2336,7 @@ function render(key){
             <h2>${d.title}</h2>
             <div class="hero__id">
               ${svg('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M14 3h7v7M3 14h7v7"/>','style="width:13px;height:13px"')}
-              ${d.tag} · 기계실 B1
+              ${d.tag}
             </div>
           </div>
         </div>
@@ -2749,7 +2749,7 @@ function openSiteEditor(id){
     <div class="fld"><label>시설 이름</label>
       <input id="sName" value="${esc(st?st.name:'')}" placeholder="아레나 수영장"></div>
     <div class="fld"><label>설명</label>
-      <input id="sSub" value="${esc(st?st.sub:'')}" placeholder="수처리 · 급탕 계통 · 기계실 B1">
+      <input id="sSub" value="${esc(st?st.sub:'')}" placeholder="수처리 · 급탕 계통">
       <span class="hint">목록 카드에 작게 표시됩니다.</span></div>`,
     `${st?`<button class="btn btn--danger" onclick="deleteSite('${st.id}')">삭제</button>`:''}
      <button class="btn btn--ghost" onclick="closeModal()">취소</button>
@@ -2910,7 +2910,7 @@ function copyLink(){
 function printLabel(){
   const d=equipmentData[currentKey];
   document.getElementById('plName').textContent=d.title;
-  document.getElementById('plCat').textContent=d.category+' · 기계실 B1';
+  document.getElementById('plCat').textContent=d.category;
   document.getElementById('plId').textContent=d.tag;
   const q=document.getElementById('plQr'); q.innerHTML='';
   new QRCode(q,{text:targetUrl(),width:200,height:200,colorDark:'#000000',colorLight:'#FFFFFF',correctLevel:QRCode.CorrectLevel.H});
