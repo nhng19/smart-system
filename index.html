@@ -1275,6 +1275,7 @@ html[data-theme="dark"] .moon{display:none}
 .stat__v small{font-size:10.5px;font-weight:700;color:var(--fg-3);margin-left:2px;font-family:var(--font)}
 .stat__v.is-ok{color:var(--ok-fg)}
 .stat__v.is-warn{color:var(--warn-fg)}
+.stat__v.is-danger{color:var(--danger-fg)}
 
 /* ============ Badges & chips ============ */
 .badge{
@@ -1840,7 +1841,7 @@ const svg = (p,extra='') => `<svg viewBox="0 0 24 24" fill="none" stroke="curren
 const SEED_EQUIP = {
   hair_catcher:{
     title:"집모기 (Hair Catcher)", short:"집모기", tag:"HC-B1-01",
-    category:"수처리 시스템", icon:I.filter,
+    category:"수처리 시스템", icon:I.filter, cycle:"d14",
     status:{label:"정상 가동",tone:"ok"},
     kpi:[
       {k:"주기",v:"15",u:"일"},
@@ -1870,7 +1871,7 @@ const SEED_EQUIP = {
   },
   multi_media_filter:{
     title:"다층여과기 (Multi-Media Filter)", short:"다층여과기", tag:"MMF-B1-02",
-    category:"수처리 시스템", icon:I.layers,
+    category:"수처리 시스템", icon:I.layers, cycle:"daily",
     status:{label:"정상 가동",tone:"ok"},
     kpi:[
       {k:"역세주기",v:"1",u:"일"},
@@ -1898,7 +1899,7 @@ const SEED_EQUIP = {
   },
   ozone_system:{
     title:"오존발생장치 + 은동이온살균장치", short:"오존·살균", tag:"OZ-B1-03",
-    category:"살균 및 수질관리", icon:I.zap,
+    category:"살균 및 수질관리", icon:I.zap, cycle:"month",
     status:{label:"점검 필요",tone:"warn"},
     kpi:[
       {k:"점검주기",v:"1",u:"개월"},
@@ -1926,7 +1927,7 @@ const SEED_EQUIP = {
   },
   heat_exchanger:{
     title:"열교환기 (Heat Exchanger)", short:"열교환기", tag:"HX-B1-04",
-    category:"급탕 · 난방 설비", icon:I.flame,
+    category:"급탕 · 난방 설비", icon:I.flame, cycle:"month",
     status:{label:"정상 가동",tone:"ok"},
     kpi:[
       {k:"수온",v:"28.1",u:"℃",tone:"ok"},
@@ -1965,6 +1966,14 @@ const LOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="
 const UNLOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 8.9-.8"/>';
 const BACK_ICON = '<path d="M15 18l-6-6 6-6"/>';
 
+/* 점검 주기 정의 — fixEq()가 로딩 시점에 참조하므로 반드시 먼저 선언한다 */
+const CYCLES = {
+  daily:{label:'매일', days:1},
+  d7:{label:'7일',  days:7},
+  d14:{label:'14일', days:14},
+  month:{label:'한달', months:1}
+};
+
 const STORE_KEY='gnfm-db-v4';
 const store={
   get(){ try{ const r=localStorage.getItem(STORE_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } },
@@ -1999,6 +2008,7 @@ function fixEq(d){
   d.short = d.short || d.title;
   d.tag = d.tag || ''; d.category = d.category || '설비';
   d.icon = d.icon || I.gear;
+  d.cycle = CYCLES[d.cycle] ? d.cycle : '';
   if(!d.status || typeof d.status!=='object') d.status={label:'정상 가동',tone:'ok'};
   d.status.label = d.status.label || '정상 가동';
   d.status.tone  = d.status.tone  || 'ok';
@@ -2064,7 +2074,7 @@ function applyCloudLogs(){
   CLOUD_LOGS.forEach(l=>{
     const st=getSite(l.site); if(!st) return;
     const d=st.equipment&&st.equipment[l.eq]; if(!d) return;
-    d.logs.push({id:l.id, t:l.t, d:l.d, tone:l.tone||'ok', ts:l.ts||0});
+    d.logs.push({id:l.id, t:l.t, d:l.d, tone:l.tone||'ok', kind:l.kind||'', ts:l.ts||0});
   });
   DB.sites.forEach(st=>Object.values(st.equipment||{}).forEach(d=>{
     d.logs.sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -2110,7 +2120,8 @@ function cloudStart(){
 function addCloudLog(entry){
   if(!cloudOn) return false;
   FB.addDoc(FB.collection(FB.db,'gnfm_logs'),
-    {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone, ts:Date.now()})
+    {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone,
+     kind:entry.kind||'note', ts:Date.now()})
     .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다.','warn'); });
   return true;
 }
@@ -2184,7 +2195,9 @@ function enterSite(id){
         <span class="tile__s">${esc(d.category||'')} · ${esc(d.tag||'')}</span>
         <span class="tile__tags">
           <span class="badge badge--${tone==='ok'?'ok':'warn'}">${esc((d.status&&d.status.label)||'상태 미지정')}</span>
-          <span class="badge badge--info">점검 ${(d.checklist||[]).length}항목</span>
+          ${(()=>{const u=dueInfo(d); return u
+              ? `<span class="badge badge--${u.tone==='ok'?'info':u.tone}">${u.none?'미점검':'차기점검 '+u.label}</span>`
+              : `<span class="badge badge--info">점검 ${(d.checklist||[]).length}항목</span>`;})()}
         </span>
       </span>
       ${isAdmin?`<button class="tile__edit" title="설비 편집" onclick="event.stopPropagation();openEqEditor('${k}')">${svg(PEN_ICON)}</button>`:''}
@@ -2221,6 +2234,41 @@ function openEquipment(key){
   try{ scrollTo({top:0}); }catch(e){}
 }
 
+/* ============================================================
+   점검 주기 — 마지막 점검일 기준 자동 계산
+   ============================================================ */
+function parseLogDate(str){
+  const m=/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(String(str||''));
+  if(!m) return null;
+  return new Date(+m[1], +m[2]-1, +m[3], +(m[4]||0), +(m[5]||0));
+}
+/* 점검 완료 기록만 주기를 갱신한다 (특이사항은 제외) */
+function lastCheckDate(d){
+  let best=null;
+  (d.logs||[]).forEach(l=>{
+    const isCheck = l.kind==='check' ||
+      (!l.kind && !/^특이사항/.test(l.t||'') && /(점검|소제|역세|보정).*(완료|수행|이상없음|정상)/.test(l.t||''));
+    if(!isCheck) return;
+    const dt=parseLogDate(l.d);
+    if(dt && (!best || dt>best)) best=dt;
+  });
+  return best;
+}
+function dueInfo(d){
+  const c=CYCLES[d&&d.cycle]; if(!c) return null;
+  const last=lastCheckDate(d);
+  if(!last) return {label:'미점검', tone:'danger', diff:null, cycle:c.label, none:true};
+  const due=new Date(last);
+  if(c.months) due.setMonth(due.getMonth()+c.months); else due.setDate(due.getDate()+c.days);
+  due.setHours(0,0,0,0);
+  const today=new Date(); today.setHours(0,0,0,0);
+  const diff=Math.round((due-today)/86400000);
+  return {
+    diff, cycle:c.label, due,
+    label: diff>0 ? 'D-'+diff : diff===0 ? 'D-DAY' : 'D+'+(-diff),
+    tone:  diff<0 ? 'danger' : diff<=1 ? 'warn' : 'ok'
+  };
+}
 const esc = t => String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 let currentKey = 'hair_catcher';
@@ -2244,7 +2292,16 @@ function render(key){
   const cn=document.getElementById('crumbNow'); if(cn) cn.textContent = d.short;
   document.title = `${d.short} · GN-FM 스마트 시설관리`;
 
-  const kpiHtml = d.kpi.map(x=>`
+  /* 주기가 설정된 설비는 '차기점검'을 자동 계산해 표시 */
+  const _due = dueInfo(d);
+  let _kpi = (d.kpi||[]).slice();
+  if(_due){
+    /* 자동 계산 항목과 겹치는 수동 입력만 제거하고, 나머지는 그대로 보존 */
+    _kpi = _kpi.filter(x=>!/차기점검|다음점검|^주기$|점검주기|역세주기|점검\s*주기/.test(x.k||''));
+    _kpi.unshift({k:'차기점검', v:_due.label, u:_due.cycle, tone:_due.tone});
+  }
+  _kpi = _kpi.slice(0,3);
+  const kpiHtml = _kpi.map(x=>`
     <div class="stat">
       <div class="stat__k">${x.k}</div>
       <div class="stat__v ${x.tone?'is-'+x.tone:''}">${x.v}${x.u?`<small>${x.u}</small>`:''}</div>
@@ -2557,7 +2614,7 @@ function deleteLog(i){
       FB.deleteDoc(FB.doc(FB.db,'gnfm_logs',target.id))
         .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
     }else{
-      d.logs.splice(i,1); saveDB(); renderLogs(d);
+      d.logs.splice(i,1); saveDB(); render(currentKey);
     }
     toast('점검 이력을 삭제했습니다.','warn');
   });
@@ -2569,7 +2626,7 @@ function submitNote(){
   const txt=el.value.trim();
   if(!txt) return toast('특이사항 내용을 입력해 주세요.','warn');
   const d=equipmentData[currentKey]; if(!d) return;
-  const entry={t:'특이사항 · '+txt, d:stamp(), tone:'warn'};
+  const entry={t:'특이사항 · '+txt, d:stamp(), tone:'warn', kind:'note'};
   if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
   el.value='';
   toast('특이사항을 이력에 기록했습니다.');
@@ -2659,11 +2716,10 @@ function submitChecklist(){
     return;
   }
   const d=equipmentData[currentKey];
-  const entry={t:'현장 점검 완료 · 담당자 제출',d:stamp(),tone:'ok'};
-  if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
-  boxes.forEach(b=>b.checked=false);
-  updateProgress();
-  toast('점검 결과가 서버에 기록되었습니다.');
+  const entry={t:'현장 점검 완료 · 담당자 제출',d:stamp(),tone:'ok',kind:'check'};
+  if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); render(currentKey); }
+  else { boxes.forEach(b=>b.checked=false); updateProgress(); }
+  toast('점검 결과가 기록되었습니다.');
 }
 
 
@@ -2741,6 +2797,12 @@ function openEqEditor(key){
     </div>
     <div class="frow">
       <div class="fld"><label>아이콘</label><select id="eIcon">${iconOpts}</select></div>
+      <div class="fld"><label>점검 주기</label>
+        <select id="eCycle">
+          <option value="" ${!(d&&d.cycle)?'selected':''}>설정 안 함</option>
+          ${Object.entries(CYCLES).map(([k,c])=>`<option value="${k}" ${d&&d.cycle===k?'selected':''}>${c.label}</option>`).join('')}
+        </select>
+        <span class="hint">설정하면 마지막 점검일 기준으로 차기점검일이 자동 계산됩니다.</span></div>
       <div class="fld"><label>상태</label>
         <select id="eTone">
           <option value="ok" ${d&&d.status&&d.status.tone==='ok'?'selected':''}>정상 (초록)</option>
@@ -2752,7 +2814,7 @@ function openEqEditor(key){
 
     <div class="fld"><label>상단 요약 지표</label>
       <textarea id="eKpi" placeholder="주기 | 15 | 일">${esc(j(d&&d.kpi,x=>`${x.k} | ${x.v} | ${x.u||''}`))}</textarea>
-      <span class="hint">한 줄에 하나씩. <b>항목 | 값 | 단위</b> 형식이며 3개까지 잘 보입니다.</span></div>
+      <span class="hint">한 줄에 하나씩. <b>항목 | 값 | 단위</b> 형식입니다. 주기를 설정하면 주기·차기점검이 자동으로 앞에 표시되므로 직접 넣지 않아도 됩니다.</span></div>
 
     <div class="fld"><label>주요 사양</label>
       <textarea id="eSpec" placeholder="용량 | 경영풀 185 m³/HR">${esc(j(d&&d.specs,x=>`${x.label} | ${x.val}`))}</textarea>
@@ -2787,7 +2849,7 @@ function saveEq(key){
   const video=val('eVideo');
   const obj = {
     title, short: val('eShort')||title, tag: val('eTag'), category: val('eCat')||'설비',
-    icon: val('eIcon')||'gear',
+    icon: val('eIcon')||'gear', cycle: val('eCycle')||'',
     status:{label: val('eStatus')||'정상 가동', tone: val('eTone')||'ok'},
     kpi, specs, videoUrl: video||'#',
     instructions: lines('eStep'), checklist: lines('eCheck'),
