@@ -1788,9 +1788,15 @@ try{
   const V = "https://www.gstatic.com/firebasejs/11.0.2/";
   const { initializeApp } = await import(V+"firebase-app.js");
   const fs = await import(V+"firebase-firestore.js");
+  const au = await import(V+"firebase-auth.js");
   const app = initializeApp(cfg);
   const db  = fs.getFirestore(app);
-  window.__FB = { db, ...fs };
+  const auth = au.getAuth(app);
+  window.__FB = { db, auth, ...fs,
+    signIn: au.signInWithEmailAndPassword,
+    signOutFn: au.signOut,
+    onAuth: au.onAuthStateChanged,
+    updatePw: au.updatePassword };
   window.dispatchEvent(new Event("fb-ready"));
 }catch(e){
   console.warn("Firestore 연결 실패 — 기기 저장으로 동작합니다.", e);
@@ -2076,11 +2082,17 @@ function cloudStart(){
   FB=window.__FB; if(!FB) return;
   cloudOn=true; setNet('연결 중…');
 
+  /* 로그인 상태를 서버 기준으로 동기화 */
+  if(FB.onAuth) FB.onAuth(FB.auth, user=>{
+    isAdmin = !!user;
+    closeModal(); refreshView();
+  });
+
   FB.onSnapshot(FB.doc(FB.db,'gnfm','master'), snap=>{
     if(snap.exists()){
       const data=snap.data();
       if(data && Array.isArray(data.sites) && data.sites.length){
-        DB={org:ROOT_LABEL, sites:data.sites};
+        DB={org:'시설 목록', sites:data.sites};
         fixDB(DB); applyCloudLogs(); saveDB(); cloudRefresh();
       }
     }else{
@@ -2408,10 +2420,12 @@ function openSettings(){
       <span class="hint">현장 QR이 이 주소로 만들어집니다. 비워 두면 지금 열려 있는 주소를 사용하는데, 미리보기 화면에서는 스캔이 되지 않습니다.</span></div>
     <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
       <label>관리자 비밀번호 변경</label>
-      <input id="setPinOld" type="password" placeholder="현재 비밀번호">
-      <input id="setPinNew" type="password" placeholder="새 비밀번호 (4자 이상)">
+      ${authOn()?'':'<input id="setPinOld" type="password" placeholder="현재 비밀번호">'}
+      <input id="setPinNew" type="password" placeholder="새 비밀번호 (${authOn()?'6':'4'}자 이상)">
       <input id="setPinNew2" type="password" placeholder="새 비밀번호 확인">
-      <span class="hint">변경하지 않으려면 비워 두세요.</span></div>`,
+      <span class="hint">${authOn()
+        ? '로그인 계정('+((FB.auth.currentUser&&FB.auth.currentUser.email)||'')+')의 비밀번호가 바뀝니다. 변경하지 않으려면 비워 두세요.'
+        : '변경하지 않으려면 비워 두세요.'}</span></div>`,
     `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
      <button class="btn btn--primary" onclick="saveSettings()">저장</button>`);
 }
@@ -2419,11 +2433,23 @@ function saveSettings(){
   if(!requireAdmin()) return;
   const nb=normBase(val('setBase'));
   const o=val('setPinOld'), n1=val('setPinNew'), n2=val('setPinNew2');
-  if(n1||n2||o){
-    if(o!==ADMIN_PIN) return toast('현재 비밀번호가 올바르지 않습니다.','warn');
-    if(n1.length<4)   return toast('새 비밀번호는 4자 이상이어야 합니다.','warn');
-    if(n1!==n2)       return toast('새 비밀번호가 서로 일치하지 않습니다.','warn');
-    ADMIN_PIN=n1; try{ localStorage.setItem('gnfm-pin',n1); }catch(e){}
+  if(n1||n2){
+    if(n1!==n2) return toast('새 비밀번호가 서로 일치하지 않습니다.','warn');
+    if(authOn()){
+      if(n1.length<6) return toast('새 비밀번호는 6자 이상이어야 합니다.','warn');
+      const u=FB.auth.currentUser;
+      if(!u) return toast('로그인 상태를 확인해 주세요.','warn');
+      FB.updatePw(u,n1)
+        .then(()=>toast('비밀번호를 변경했습니다.'))
+        .catch(err=>{
+          const c=(err&&err.code)||'';
+          toast(/recent-login/.test(c)?'보안을 위해 다시 로그인한 뒤 변경해 주세요.':'비밀번호 변경에 실패했습니다.','warn');
+        });
+    }else{
+      if(o!==ADMIN_PIN) return toast('현재 비밀번호가 올바르지 않습니다.','warn');
+      if(n1.length<4)   return toast('새 비밀번호는 4자 이상이어야 합니다.','warn');
+      ADMIN_PIN=n1; try{ localStorage.setItem('gnfm-pin',n1); }catch(e){}
+    }
   }
   BASE_URL=nb; try{ nb?localStorage.setItem('gnfm-base',nb):localStorage.removeItem('gnfm-base'); }catch(e){}
   closeModal();
@@ -2453,15 +2479,61 @@ function requireAdmin(){
   toast('관리자만 수정할 수 있습니다.','warn');
   return false;
 }
+function authOn(){ return !!(cloudOn && FB && FB.auth && FB.signIn); }
+
 function toggleAdmin(){
   if(isAdmin){
-    isAdmin=false; closeModal(); refreshView();
+    if(authOn() && FB.auth.currentUser){
+      FB.signOutFn(FB.auth).catch(()=>{});   /* onAuth가 화면을 갱신 */
+    }else{
+      isAdmin=false; closeModal(); refreshView();
+    }
     return toast('관리자 모드를 해제했습니다.');
   }
+  if(authOn()) return openAuthLogin();
+  openPinLogin();
+}
+
+/* 서버 로그인 (Firebase Authentication) */
+function openAuthLogin(){
+  openModal('관리자 로그인', `
+    <div class="fld"><label>관리자 이메일</label>
+      <input id="authEmail" type="email" autocomplete="username" placeholder="admin@example.com"></div>
+    <div class="fld"><label>비밀번호</label>
+      <input id="authPw" type="password" autocomplete="current-password" placeholder="비밀번호">
+      <span class="hint">시설·설비 편집과 이력 삭제는 서버에서 권한을 확인합니다.</span></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" id="authGo" onclick="doAuthLogin()">로그인</button>`);
+  setTimeout(()=>{
+    const e=document.getElementById('authEmail'), w=document.getElementById('authPw');
+    if(e) e.focus();
+    [e,w].forEach(el=>el&&el.addEventListener('keydown',ev=>{ if(ev.key==='Enter') doAuthLogin(); }));
+  },60);
+}
+function doAuthLogin(){
+  const em=val('authEmail'), pw=val('authPw');
+  if(!em||!pw) return toast('이메일과 비밀번호를 입력해 주세요.','warn');
+  const btn=document.getElementById('authGo'); if(btn){ btn.disabled=true; btn.textContent='확인 중…'; }
+  FB.signIn(FB.auth, em, pw)
+    .then(()=>toast('관리자로 로그인했습니다.'))
+    .catch(err=>{
+      const c=(err&&err.code)||'';
+      const msg = /invalid-credential|wrong-password|user-not-found|invalid-email/.test(c)
+        ? '이메일 또는 비밀번호가 올바르지 않습니다.'
+        : /too-many-requests/.test(c) ? '시도가 많아 잠시 차단되었습니다. 잠시 후 다시 시도하세요.'
+        : /network/.test(c) ? '네트워크 연결을 확인해 주세요.'
+        : '로그인에 실패했습니다.';
+      toast(msg,'warn');
+      if(btn){ btn.disabled=false; btn.textContent='로그인'; }
+    });
+}
+
+/* 오프라인 전용 (이 기기 데이터만 다룰 때) */
+function openPinLogin(){
   openModal('관리자 확인', `
     <div class="fld"><label>관리자 비밀번호</label>
       <input id="pinInput" type="password" inputmode="numeric" placeholder="비밀번호를 입력하세요">
-      <span class="hint">점검 이력을 삭제하려면 관리자 확인이 필요합니다.</span></div>`,
+      <span class="hint">서버에 연결되지 않아 이 기기에 저장된 내용만 다룹니다.</span></div>`,
     `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
      <button class="btn btn--primary" onclick="checkPin()">확인</button>`);
   setTimeout(()=>{
@@ -2474,7 +2546,7 @@ function checkPin(){
   const v=(document.getElementById('pinInput')||{value:''}).value;
   if(v!==ADMIN_PIN) return toast('비밀번호가 올바르지 않습니다.','warn');
   isAdmin=true; closeModal(); refreshView();
-  toast('관리자 모드입니다. 시설·설비 편집과 이력 삭제가 가능합니다.');
+  toast('관리자 모드입니다(이 기기 전용).');
 }
 function deleteLog(i){
   if(!isAdmin) return toast('관리자만 삭제할 수 있습니다.','warn');
