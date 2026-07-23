@@ -2042,9 +2042,13 @@ function saveDB(){ store.set(DB); }
 
 /* ============================================================
    CLOUD SYNC (Firestore) — 여러 기기 공유
-   master 문서: 시설·설비 정보 / logs 컬렉션: 점검 이력·특이사항
+   gnfm_sites/{siteId} 문서: 시설별 정보+설비 (문서 단위라야 권한 분리가 됨)
+   gnfm_users/{email}  문서: 관리자 권한 — role: 'super'(전체) | 'site'(담당 시설만) + sites:[siteId,...]
+   gnfm_logs 컬렉션: 점검 이력 · 특이사항 (직원 QR 제출, 로그인 불필요)
    ============================================================ */
 let FB=null, cloudOn=false, CLOUD_LOGS=null;
+let myRole=null;   // null(권한없음) | 'super' | 'site'
+let mySites=[];    // myRole==='site'일 때 담당 시설 id 목록
 
 function setNet(txt, cls){
   const b=document.getElementById('netBadge'), t=document.getElementById('netTxt');
@@ -2052,19 +2056,41 @@ function setNet(txt, cls){
   if(b) b.className='live'+(cls?' '+cls:'');
 }
 
-function stripLogs(){
-  return DB.sites.map(st=>({
-    id:st.id, name:st.name, sub:st.sub||'',
-    equipment:Object.fromEntries(Object.entries(st.equipment||{}).map(([k,d])=>{
-      const c=Object.assign({},d); delete c.logs; return [k,c];
-    }))
-  }));
+/* 전체 관리자인가 (오프라인 PIN 모드는 항상 전체 권한과 동일하게 취급) */
+function isSuper(){ return isAdmin && (!authOn() || myRole==='super'); }
+/* 이 시설(siteId)의 설비를 수정할 권한이 있는가 */
+function canEditSite(siteId){
+  if(!isAdmin) return false;
+  if(!authOn()) return true;
+  return myRole==='super' || (myRole==='site' && mySites.includes(siteId));
+}
+function requireSuper(){
+  if(isSuper()) return true;
+  toast(isAdmin?'전체 관리자만 할 수 있습니다.':'관리자만 수정할 수 있습니다.','warn');
+  return false;
+}
+function requireSiteAdmin(siteId){
+  if(canEditSite(siteId)) return true;
+  toast(isAdmin?'담당 시설이 아닙니다.':'관리자만 수정할 수 있습니다.','warn');
+  return false;
 }
 
-function pushMaster(){
+function stripLogsOf(st){
+  return {id:st.id, name:st.name, sub:st.sub||'',
+    equipment:Object.fromEntries(Object.entries(st.equipment||{}).map(([k,d])=>{
+      const c=Object.assign({},d); delete c.logs; return [k,c];
+    }))};
+}
+
+function pushSite(siteId){
   if(!cloudOn) return;
-  FB.setDoc(FB.doc(FB.db,'gnfm','master'), {sites:stripLogs(), updatedAt:Date.now()})
+  const st=getSite(siteId); if(!st) return;
+  FB.setDoc(FB.doc(FB.db,'gnfm_sites',siteId), stripLogsOf(st))
     .catch(e=>{ console.warn('저장 실패',e); toast('공유 저장에 실패했습니다. 연결을 확인하세요.','warn'); });
+}
+function removeSiteDoc(siteId){
+  if(!cloudOn) return;
+  FB.deleteDoc(FB.doc(FB.db,'gnfm_sites',siteId)).catch(e=>console.warn('삭제 실패',e));
 }
 
 /* 클라우드 이력을 설비별로 배분 */
@@ -2088,25 +2114,69 @@ function cloudRefresh(){
   else showRoom();
 }
 
+/* 예전 단일 문서(gnfm/master)에 남아있던 데이터를 새 구조(gnfm_sites)로 이전.
+   시설 단위로 "없는 것만" 채워 넣으므로, 권한 문제 등으로 일부만 옮겨진 경우에도
+   전체 관리자가 다시 로그인할 때마다 자동으로 나머지를 복구한다. */
+function migrateOldMaster(){
+  if(!isSuper()) return;   /* 쓰기 권한이 서버에 확정된 뒤에만 시도 (규칙상 어차피 막히지만, 불필요한 거부요청을 없앤다) */
+  FB.getDoc(FB.doc(FB.db,'gnfm','master')).then(snap=>{
+    if(!snap.exists()) return;
+    const data=snap.data();
+    if(!data || !Array.isArray(data.sites) || !data.sites.length) return;
+    FB.getDocs(FB.collection(FB.db,'gnfm_sites')).then(cur=>{
+      const have=new Set(cur.docs.map(d=>d.id));
+      const missing=data.sites.filter(st=>st && st.id && !have.has(st.id));
+      if(!missing.length) return;
+      Promise.all(missing.map(st=>
+        FB.setDoc(FB.doc(FB.db,'gnfm_sites',st.id), stripLogsOf(st)).catch(e=>{ console.warn(e); return null; })
+      )).then(()=>toast(`시설 ${missing.length}곳의 데이터를 복구했습니다.`));
+    }).catch(e=>console.warn(e));
+  }).catch(e=>console.warn(e));
+}
+
+/* 로그인한 이메일의 권한을 서버에서 조회. 등록된 관리자가 하나도 없으면
+   지금 로그인한 계정을 최초 전체 관리자로 자동 등록한다(최초 세팅용). */
+function resolveRole(user){
+  if(!user){ myRole=null; mySites=[]; isAdmin=false; closeModal(); refreshView(); return; }
+  const email=(user.email||'').toLowerCase();
+  FB.getDoc(FB.doc(FB.db,'gnfm_users',email)).then(snap=>{
+    if(snap.exists()){
+      const d=snap.data()||{};
+      myRole = d.role==='super' ? 'super' : 'site';
+      mySites = Array.isArray(d.sites) ? d.sites : [];
+      isAdmin = true;
+      closeModal(); refreshView();
+      if(myRole==='super') migrateOldMaster();
+    }else{
+      FB.getDocs(FB.query(FB.collection(FB.db,'gnfm_users'), FB.limit(1))).then(all=>{
+        if(all.empty){
+          FB.setDoc(FB.doc(FB.db,'gnfm_users',email), {role:'super', sites:[], createdAt:Date.now()})
+            .then(()=>FB.setDoc(FB.doc(FB.db,'gnfm_meta','bootstrap'), {done:true, by:email, at:Date.now()}))
+            .then(()=>migrateOldMaster())      /* 부트스트랩(내 super 문서) 생성이 서버에 확정된 뒤에 이전 실행 */
+            .catch(e=>console.warn(e));
+          myRole='super'; mySites=[]; isAdmin=true;
+        }else{
+          myRole=null; mySites=[]; isAdmin=true;
+          toast('관리자 권한이 없는 계정입니다. 전체 관리자에게 문의하세요.','warn');
+        }
+        closeModal(); refreshView();
+      }).catch(()=>{ myRole=null; isAdmin=true; closeModal(); refreshView(); });
+    }
+  }).catch(e=>{ console.warn(e); myRole=null; isAdmin=true; closeModal(); refreshView(); });
+}
+
 function cloudStart(){
   FB=window.__FB; if(!FB) return;
   cloudOn=true; setNet('연결 중…');
 
   /* 로그인 상태를 서버 기준으로 동기화 */
-  if(FB.onAuth) FB.onAuth(FB.auth, user=>{
-    isAdmin = !!user;
-    closeModal(); refreshView();
-  });
+  if(FB.onAuth) FB.onAuth(FB.auth, resolveRole);
 
-  FB.onSnapshot(FB.doc(FB.db,'gnfm','master'), snap=>{
-    if(snap.exists()){
-      const data=snap.data();
-      if(data && Array.isArray(data.sites) && data.sites.length){
-        DB={org:'시설 목록', sites:data.sites};
-        fixDB(DB); applyCloudLogs(); saveDB(); cloudRefresh();
-      }
-    }else{
-      pushMaster();   /* 최초 1회: 현재 기기 데이터를 올림 */
+  FB.onSnapshot(FB.collection(FB.db,'gnfm_sites'), snap=>{
+    const sites = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
+    if(sites.length){
+      DB={org:'시설 목록', sites};
+      fixDB(DB); applyCloudLogs(); saveDB(); cloudRefresh();
     }
     setNet('공유중');
   }, err=>{ console.warn(err); cloudOn=false; setNet('오프라인','is-err'); });
@@ -2155,7 +2225,7 @@ function showRoom(){
         <span class="tile__s">${esc(st.sub||'')}</span>
         <span class="tile__tags"><span class="badge badge--info">설비 ${n}종</span></span>
       </span>
-      ${isAdmin?`<button class="tile__edit" title="시설 편집" onclick="event.stopPropagation();openSiteEditor('${st.id}')">${svg(PEN_ICON)}</button>`:''}
+      ${isSuper()?`<button class="tile__edit" title="시설 편집" onclick="event.stopPropagation();openSiteEditor('${st.id}')">${svg(PEN_ICON)}</button>`:''}
       <span class="tile__chev">›</span>
     </div>`;
   }).join('');
@@ -2164,10 +2234,10 @@ function showRoom(){
       <h1>시설 목록</h1>
       <p>시설을 선택하면 해당 시설의 설비 목록으로 이동합니다.</p>
     </div></div>
-    <div class="tiles">${tiles || `<div class="empty">등록된 시설이 없습니다.${isAdmin?'<br>아래에서 첫 시설을 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}</div>`}
-      ${isAdmin?`<div class="tile is-add" onclick="openSiteEditor()">${svg(PLUS_ICON)} 시설 추가</div>`:''}
+    <div class="tiles">${tiles || `<div class="empty">등록된 시설이 없습니다.${isSuper()?'<br>아래에서 첫 시설을 추가해 보세요.':'<br>추가하려면 전체 관리자 로그인이 필요합니다.'}</div>`}
+      ${isSuper()?`<div class="tile is-add" onclick="openSiteEditor()">${svg(PLUS_ICON)} 시설 추가</div>`:''}
     </div>
-    ${isAdmin?`<p style="margin:18px 2px 0;font-size:12px;color:var(--fg-4);line-height:1.7">
+    ${isSuper()?`<p style="margin:18px 2px 0;font-size:12px;color:var(--fg-4);line-height:1.7">
       화면이 비어 보이거나 내용이 깨진 경우
       <a onclick="resetAll()" style="color:var(--brand-600);font-weight:800;cursor:pointer">기본 설비 데이터로 되돌리기</a>
     </p>`:''}`;
@@ -2200,7 +2270,7 @@ function enterSite(id){
               : `<span class="badge badge--info">점검 ${(d.checklist||[]).length}항목</span>`;})()}
         </span>
       </span>
-      ${isAdmin?`<button class="tile__edit" title="설비 편집" onclick="event.stopPropagation();openEqEditor('${k}')">${svg(PEN_ICON)}</button>`:''}
+      ${canEditSite(id)?`<button class="tile__edit" title="설비 편집" onclick="event.stopPropagation();openEqEditor('${k}')">${svg(PEN_ICON)}</button>`:''}
       <span class="tile__chev">›</span>
     </div>`;
   }).join('');
@@ -2209,8 +2279,8 @@ function enterSite(id){
       <h1>${esc(st.name)}</h1>
       <p>${esc(st.sub||'')}${st.sub?' · ':''}설비를 선택하면 사양·조작 매뉴얼·점검표가 열립니다.</p>
     </div></div>
-    <div class="tiles">${tiles || `<div class="empty">이 시설에 등록된 설비가 없습니다.${isAdmin?'<br>아래에서 첫 설비를 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}</div>`}
-      ${isAdmin?`<div class="tile is-add" onclick="openEqEditor()">${svg(PLUS_ICON)} 설비 추가</div>`:''}
+    <div class="tiles">${tiles || `<div class="empty">이 시설에 등록된 설비가 없습니다.${canEditSite(id)?'<br>아래에서 첫 설비를 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}</div>`}
+      ${canEditSite(id)?`<div class="tile is-add" onclick="openEqEditor()">${svg(PLUS_ICON)} 설비 추가</div>`:''}
     </div>`;
   safeURL('?site='+id);
   try{ scrollTo({top:0}); }catch(e){}
@@ -2444,7 +2514,7 @@ function renderLogs(d){
     <div class="log">
       <span class="log__dot ${l.tone!=='ok'?'is-'+l.tone:''}"></span>
       <div><div class="log__t">${esc(l.t)}</div><div class="log__d">${esc(l.d)}</div></div>
-      ${isAdmin?`<button class="log__del" title="이력 삭제" onclick="deleteLog(${i})" aria-label="이력 삭제">✕</button>`:''}
+      ${canEditSite(currentSite)?`<button class="log__del" title="이력 삭제" onclick="deleteLog(${i})" aria-label="이력 삭제">✕</button>`:''}
     </div>`).join('')
     : `<p style="margin:6px 0;font-size:12.5px;color:var(--fg-4)">기록된 점검 이력이 없습니다.</p>`;
   document.getElementById('logCount').textContent = d.logs.length + '건';
@@ -2471,10 +2541,11 @@ function normBase(u){
 /* ---- 관리자 설정 ---- */
 function openSettings(){
   if(!requireAdmin()) return;
+  const su = isSuper();
   openModal('관리자 설정', `
-    <div class="fld"><label>공개 웹 주소 (QR용)</label>
+    ${su?`<div class="fld"><label>공개 웹 주소 (QR용)</label>
       <input id="setBase" value="${esc(BASE_URL)}" placeholder="https://아이디.github.io/저장소이름/">
-      <span class="hint">현장 QR이 이 주소로 만들어집니다. 비워 두면 지금 열려 있는 주소를 사용하는데, 미리보기 화면에서는 스캔이 되지 않습니다.</span></div>
+      <span class="hint">현장 QR이 이 주소로 만들어집니다. 비워 두면 지금 열려 있는 주소를 사용하는데, 미리보기 화면에서는 스캔이 되지 않습니다.</span></div>`:''}
     <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
       <label>관리자 비밀번호 변경</label>
       ${authOn()?'':'<input id="setPinOld" type="password" placeholder="현재 비밀번호">'}
@@ -2482,13 +2553,16 @@ function openSettings(){
       <input id="setPinNew2" type="password" placeholder="새 비밀번호 확인">
       <span class="hint">${authOn()
         ? '로그인 계정('+((FB.auth.currentUser&&FB.auth.currentUser.email)||'')+')의 비밀번호가 바뀝니다. 변경하지 않으려면 비워 두세요.'
-        : '변경하지 않으려면 비워 두세요.'}</span></div>`,
+        : '변경하지 않으려면 비워 두세요.'}</span></div>
+    ${su&&authOn()?`<div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
+      <button class="btn btn--ghost" style="width:100%" onclick="openAdminUsers()">${svg(GEAR_ICON)} 관리자 계정 관리</button>
+      <span class="hint">전체 관리자 / 사업장 관리자를 추가하고 담당 시설을 지정합니다.</span></div>`:''}`,
     `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
      <button class="btn btn--primary" onclick="saveSettings()">저장</button>`);
 }
 function saveSettings(){
   if(!requireAdmin()) return;
-  const nb=normBase(val('setBase'));
+  const baseEl=document.getElementById('setBase');
   const o=val('setPinOld'), n1=val('setPinNew'), n2=val('setPinNew2');
   if(n1||n2){
     if(n1!==n2) return toast('새 비밀번호가 서로 일치하지 않습니다.','warn');
@@ -2508,10 +2582,72 @@ function saveSettings(){
       ADMIN_PIN=n1; try{ localStorage.setItem('gnfm-pin',n1); }catch(e){}
     }
   }
-  BASE_URL=nb; try{ nb?localStorage.setItem('gnfm-base',nb):localStorage.removeItem('gnfm-base'); }catch(e){}
+  if(baseEl){
+    const nb=normBase(baseEl.value);
+    BASE_URL=nb; try{ nb?localStorage.setItem('gnfm-base',nb):localStorage.removeItem('gnfm-base'); }catch(e){}
+  }
   closeModal();
   if(level==='eq') generateQRCode();
   toast('설정을 저장했습니다.');
+}
+
+/* ---- 관리자 계정 관리 (전체 관리자 전용) ---- */
+function openAdminUsers(editEmail){
+  if(!requireSuper()) return;
+  FB.getDocs(FB.collection(FB.db,'gnfm_users')).then(snap=>{
+    const users = snap.docs.map(d=>Object.assign({email:d.id}, d.data()));
+    renderAdminUsersModal(users, editEmail||null);
+  }).catch(e=>{ console.warn(e); toast('목록을 불러오지 못했습니다.','warn'); });
+}
+function renderAdminUsersModal(users, editEmail){
+  const editing = editEmail ? users.find(u=>u.email===editEmail) : null;
+  const rows = users.map(u=>{
+    const roleLabel = u.role==='super' ? '전체 관리자' : '사업장 관리자';
+    const siteNames = u.role==='super' ? '모든 시설' : ((u.sites||[]).map(id=>{const s=getSite(id);return s?s.name:id;}).join(', ')||'담당 시설 없음');
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--surface-line)">
+      <span style="flex:1;font-size:13px"><b>${esc(u.email)}</b><br><span style="color:var(--fg-4)">${roleLabel} · ${esc(siteNames)}</span></span>
+      <button class="btn btn--ghost" style="padding:6px 10px" onclick="openAdminUsers('${esc(u.email)}')">편집</button>
+      <button class="btn btn--danger" style="padding:6px 10px" onclick="deleteAdminUser('${esc(u.email)}')">삭제</button>
+    </div>`;
+  }).join('') || `<p style="color:var(--fg-4);font-size:13px;margin:0">등록된 관리자가 없습니다.</p>`;
+
+  const siteChecks = DB.sites.map(st=>`
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
+      <input type="checkbox" class="auSite" value="${st.id}" ${editing&&(editing.sites||[]).includes(st.id)?'checked':''}> ${esc(st.name)}
+    </label>`).join('') || '<span class="hint">등록된 시설이 없습니다.</span>';
+
+  openModal('관리자 계정 관리', `
+    <div style="max-height:220px;overflow:auto;margin-bottom:10px">${rows}</div>
+    <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:12px">
+      <label>${editing?'권한 수정':'관리자 추가'}</label>
+      <input id="auEmail" type="email" value="${esc(editing?editing.email:'')}" ${editing?'disabled':''} placeholder="admin@example.com">
+      <span class="hint">Firebase 콘솔에서 이메일/비밀번호 계정을 먼저 만든 뒤, 같은 이메일로 여기서 권한을 부여하세요.</span></div>
+    <div class="fld"><label>역할</label>
+      <select id="auRole" onchange="document.getElementById('auSites').hidden=(this.value==='super')">
+        <option value="site" ${!editing||editing.role!=='super'?'selected':''}>사업장 관리자 (담당 시설만 수정)</option>
+        <option value="super" ${editing&&editing.role==='super'?'selected':''}>전체 관리자 (모든 시설)</option>
+      </select></div>
+    <div class="fld" id="auSites" ${editing&&editing.role==='super'?'hidden':''}>
+      <label>담당 시설</label>${siteChecks}</div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>
+     <button class="btn btn--primary" onclick="saveAdminUser()">${editing?'수정 저장':'추가'}</button>`);
+}
+function saveAdminUser(){
+  const email=val('auEmail').toLowerCase();
+  if(!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return toast('올바른 이메일을 입력해 주세요.','warn');
+  const role=(document.getElementById('auRole')||{}).value||'site';
+  const sites=Array.from(document.querySelectorAll('.auSite:checked')).map(x=>x.value);
+  if(role==='site' && !sites.length) return toast('담당 시설을 하나 이상 선택해 주세요.','warn');
+  FB.setDoc(FB.doc(FB.db,'gnfm_users',email), {role, sites:role==='super'?[]:sites, updatedAt:Date.now()})
+    .then(()=>{ toast('관리자 권한을 저장했습니다.'); openAdminUsers(); })
+    .catch(e=>{ console.warn(e); toast('저장에 실패했습니다.','warn'); });
+}
+function deleteAdminUser(email){
+  askConfirm(`"${email}" 관리자 권한을 삭제할까요? (로그인 계정 자체는 Firebase 콘솔에서 별도로 삭제해야 합니다)`, ()=>{
+    FB.deleteDoc(FB.doc(FB.db,'gnfm_users',email))
+      .then(()=>{ toast('삭제했습니다.','warn'); openAdminUsers(); })
+      .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
+  });
 }
 
 function syncAdminBtn(){
@@ -2606,7 +2742,7 @@ function checkPin(){
   toast('관리자 모드입니다(이 기기 전용).');
 }
 function deleteLog(i){
-  if(!isAdmin) return toast('관리자만 삭제할 수 있습니다.','warn');
+  if(!requireSiteAdmin(currentSite)) return;
   const d=equipmentData[currentKey]; if(!d||!d.logs[i]) return;
   const target=d.logs[i];
   askConfirm(`"${target.t}" 이력을 삭제할까요?`, ()=>{
@@ -2743,7 +2879,7 @@ const lines = id => val(id).split('\n').map(x=>x.trim()).filter(Boolean);
 
 /* ---------- 구역 ---------- */
 function openSiteEditor(id){
-  if(!requireAdmin()) return;
+  if(!requireSuper()) return;
   const st = id?getSite(id):null;
   openModal(st?'시설 편집':'새 시설 추가', `
     <div class="fld"><label>시설 이름</label>
@@ -2757,27 +2893,28 @@ function openSiteEditor(id){
   setTimeout(()=>document.getElementById('sName').focus(),60);
 }
 function saveSite(id){
-  if(!requireAdmin()) return;
+  if(!requireSuper()) return;
   const name=val('sName');
   if(!name) return toast('시설 이름을 입력해 주세요.','warn');
+  let newId = id;
   if(id){ const st=getSite(id); st.name=name; st.sub=val('sSub'); }
-  else { DB.sites.push({id:uid('site'),name,sub:val('sSub'),equipment:{}}); }
-  saveDB(); pushMaster(); closeModal();
-  level==='room'?showRoom():enterSite(id||DB.sites[DB.sites.length-1].id);
+  else { newId=uid('site'); DB.sites.push({id:newId,name,sub:val('sSub'),equipment:{}}); }
+  saveDB(); pushSite(newId); closeModal();
+  level==='room'?showRoom():enterSite(newId);
   toast(id?'시설 정보를 수정했습니다.':'새 시설을 추가했습니다.');
 }
 function deleteSite(id){
-  if(!requireAdmin()) return;
+  if(!requireSuper()) return;
   const st=getSite(id); if(!st) return;
   askConfirm(`"${st.name}" 시설과 그 안의 설비를 모두 삭제할까요?`, ()=>{
-    DB.sites=DB.sites.filter(x=>x.id!==id); saveDB(); pushMaster(); showRoom();
+    DB.sites=DB.sites.filter(x=>x.id!==id); saveDB(); removeSiteDoc(id); showRoom();
     toast('시설을 삭제했습니다.','warn');
   });
 }
 
 /* ---------- 설비 ---------- */
 function openEqEditor(key){
-  if(!requireAdmin()) return;
+  if(!requireSiteAdmin(currentSite)) return;
   const d = key?equipmentData[key]:null;
   const j = (a,f)=> (a||[]).map(f).join('\n');
   const iconOpts = Object.keys(ICONS).map(k=>
@@ -2839,7 +2976,7 @@ function openEqEditor(key){
   setTimeout(()=>document.getElementById('eTitle').focus(),60);
 }
 function saveEq(key){
-  if(!requireAdmin()) return;
+  if(!requireSiteAdmin(currentSite)) return;
   const title=val('eTitle');
   if(!title) return toast('설비명을 입력해 주세요.','warn');
   const kpi = lines('eKpi').map(l=>{ const a=l.split('|').map(x=>x.trim());
@@ -2859,25 +2996,34 @@ function saveEq(key){
   const st=getSite(currentSite); if(!st) return;
   const k = key || uid('eq');
   st.equipment[k]=obj; equipmentData=st.equipment;
-  saveDB(); pushMaster(); closeModal();
+  saveDB(); pushSite(currentSite); closeModal();
   if(level==='eq'&&key){ renderSegs(); render(k); }
   else enterSite(currentSite);
   toast(key?'설비 정보를 수정했습니다.':'새 설비를 추가했습니다.');
 }
 function deleteEq(key){
-  if(!requireAdmin()) return;
+  if(!requireSiteAdmin(currentSite)) return;
   const d=equipmentData[key]; if(!d) return;
   askConfirm(`"${d.short||d.title}" 설비를 삭제할까요?`, ()=>{
     const st=getSite(currentSite); delete st.equipment[key]; equipmentData=st.equipment;
-    saveDB(); pushMaster(); enterSite(currentSite);
+    saveDB(); pushSite(currentSite); enterSite(currentSite);
     toast('설비를 삭제했습니다.','warn');
   });
 }
 function resetAll(){
-  if(!requireAdmin()) return;
+  if(!requireSuper()) return;
   askConfirm('직접 추가·수정한 내용이 모두 지워지고 기본 설비 데이터로 돌아갑니다. 진행할까요?', ()=>{
     try{ localStorage.removeItem(STORE_KEY); }catch(e){}
-    DB = seedDB(); saveDB(); pushMaster(); showRoom();
+    if(cloudOn){
+      FB.getDocs(FB.collection(FB.db,'gnfm_sites')).then(snap=>{
+        snap.docs.forEach(d=>FB.deleteDoc(d.ref).catch(()=>{}));
+        DB = seedDB(); saveDB();
+        DB.sites.forEach(st=>pushSite(st.id));
+        showRoom();
+      }).catch(()=>{ DB=seedDB(); saveDB(); showRoom(); });
+    }else{
+      DB = seedDB(); saveDB(); showRoom();
+    }
     toast('기본 데이터로 초기화했습니다.');
   });
 }
