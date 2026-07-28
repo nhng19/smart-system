@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 /* 오프라인 QR 엔진 — MIT (c) 2009 Kazuhiko Arase */
 (function(){
@@ -1226,7 +1227,7 @@ html[data-theme="dark"] .moon{display:none}
 .card__ico.is-warn{background:var(--warn-bg);color:var(--warn-fg);border-color:var(--warn-bd)}
 .card__ico.is-ok{background:var(--ok-bg);color:var(--ok-fg);border-color:var(--ok-bd)}
 .card__ico.is-danger{background:var(--danger-bg);color:var(--danger-fg);border-color:var(--danger-bd)}
-.card__title{font-size:13.5px;font-weight:800;letter-spacing:-.015em;flex:1;min-width:0}
+.card__title{font-size:13.5px;font-weight:800;letter-spacing:-.015em;flex:1;min-width:32px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card__meta{font-size:11px;font-weight:600;color:var(--fg-4)}
 .card__body{padding:16px}
 .card__foot{padding:12px 16px;border-top:1px solid var(--surface-line);background:var(--bg-inset)}
@@ -1427,6 +1428,10 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
 
 /* ============ Log / activity ============ */
 .logs{display:grid;gap:2px}
+.logs__group{margin-bottom:6px}
+.logs__gh{display:flex;align-items:baseline;justify-content:space-between;font-size:12px;font-weight:800;color:var(--fg-3);
+  padding:10px 2px 5px;border-top:1px solid var(--surface-line)}
+.logs__group:first-of-type .logs__gh{border-top:0;padding-top:2px}
 .log{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:9px 0;border-bottom:1px dashed var(--surface-line);align-items:center}
 .log:last-child{border-bottom:0}
 .log__dot{width:8px;height:8px;border-radius:50%;background:var(--ok-fg);box-shadow:0 0 0 3px var(--ok-bg)}
@@ -1558,8 +1563,8 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
    계층 구조 (시설 목록 → 시설 → 설비) + 편집기
    ============================================================ */
 [hidden]{display:none !important}
-.pagehead{display:flex;align-items:flex-end;gap:12px;margin:2px 2px 18px;animation:rise .5s var(--ease-out) both}
-.pagehead__t{flex:1;min-width:0}
+.pagehead{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px;margin:2px 2px 18px;animation:rise .5s var(--ease-out) both}
+.pagehead__t{flex:1;min-width:180px}
 .pagehead h1{font-size:21px;font-weight:800;letter-spacing:-.03em;margin:0 0 4px;color:var(--fg)}
 .pagehead p{margin:0;color:var(--fg-3);font-size:13.5px;line-height:1.6}
 .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,268px),1fr));gap:13px}
@@ -1745,10 +1750,13 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
           </div>
           <div class="card__title">최근 점검 이력</div>
-          <button class="adminbtn" data-admin-btn onclick="toggleAdmin()"></button>
-          <span class="card__meta" id="logCount">0건</span>
+          <span class="card__meta" id="logCount" style="flex:none">0건</span>
         </div>
         <div class="card__body">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px">
+            <span style="font-size:12px;color:var(--fg-3);font-weight:600">점검 이력</span>
+            <button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="exportEqLogs()" title="이 설비의 점검 이력을 엑셀로 저장">↓ 저장</button>
+          </div>
           <div class="logs" id="logs"></div>
         </div>
       </div>
@@ -2279,6 +2287,10 @@ function enterSite(id){
       <h1>${esc(st.name)}</h1>
       <p>${esc(st.sub||'')}${st.sub?' · ':''}설비를 선택하면 사양·조작 매뉴얼·점검표가 열립니다.</p>
     </div></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:0 2px 4px;gap:8px">
+      <span style="font-size:12px;color:var(--fg-3);font-weight:600">설비 목록</span>
+      <button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="exportSiteLogs()" title="이 시설의 모든 설비 점검 이력을 엑셀로 저장">↓ 저장</button>
+    </div>
     <div class="tiles">${tiles || `<div class="empty">이 시설에 등록된 설비가 없습니다.${canEditSite(id)?'<br>아래에서 첫 설비를 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}</div>`}
       ${canEditSite(id)?`<div class="tile is-add" onclick="openEqEditor()">${svg(PLUS_ICON)} 설비 추가</div>`:''}
     </div>`;
@@ -2291,7 +2303,7 @@ function openEquipment(key){
     toast('해당 설비를 찾을 수 없습니다.','warn');
     return currentSite ? enterSite(currentSite) : showRoom();
   }
-  level='eq'; currentKey=key;
+  level='eq'; currentKey=key; logsExpanded=false;
   const st=getSite(currentSite);
   document.getElementById('listPane').hidden=true;
   document.getElementById('detailPane').hidden=false;
@@ -2508,15 +2520,43 @@ function render(key){
   generateQRCode();
 }
 
-function renderLogs(d){
-  document.getElementById('logs').innerHTML = d.logs.length
-    ? d.logs.map((l,i)=>`
-    <div class="log">
+let logsExpanded = false;
+function logItemHTML(l, i){
+  return `<div class="log">
       <span class="log__dot ${l.tone!=='ok'?'is-'+l.tone:''}"></span>
       <div><div class="log__t">${esc(l.t)}</div><div class="log__d">${esc(l.d)}</div></div>
       ${canEditSite(currentSite)?`<button class="log__del" title="이력 삭제" onclick="deleteLog(${i})" aria-label="이력 삭제">✕</button>`:''}
-    </div>`).join('')
-    : `<p style="margin:6px 0;font-size:12.5px;color:var(--fg-4)">기록된 점검 이력이 없습니다.</p>`;
+    </div>`;
+}
+function toggleLogsExpanded(){
+  logsExpanded=!logsExpanded;
+  const d=equipmentData[currentKey]; if(d) renderLogs(d);
+}
+function renderLogs(d){
+  const box=document.getElementById('logs');
+  if(!d.logs.length){
+    box.innerHTML = `<p style="margin:6px 0;font-size:12.5px;color:var(--fg-4)">기록된 점검 이력이 없습니다.</p>`;
+  }else if(!logsExpanded){
+    const shown = d.logs.map((l,i)=>({l,i})).slice(0,5);
+    box.innerHTML = shown.map(({l,i})=>logItemHTML(l,i)).join('')
+      + (d.logs.length>5 ? `<button class="btn btn--ghost" style="width:100%;margin-top:8px" onclick="toggleLogsExpanded()">더보기 (총 ${d.logs.length}건) · 연도·월별로 보기</button>` : '');
+  }else{
+    const groups=new Map();  // "YYYY-MM" -> [{l,i}]
+    d.logs.forEach((l,i)=>{
+      const dt=parseLogDate(l.d);
+      const key = dt ? `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}` : '날짜 미상';
+      if(!groups.has(key)) groups.set(key,[]);
+      groups.get(key).push({l,i});
+    });
+    box.innerHTML = `<button class="btn btn--ghost" style="width:100%;margin-bottom:8px" onclick="toggleLogsExpanded()">접기</button>`
+      + Array.from(groups.entries()).map(([key,items])=>{
+          const label = key==='날짜 미상' ? key : `${key.slice(0,4)}년 ${+key.slice(5,7)}월`;
+          return `<div class="logs__group">
+            <div class="logs__gh">${esc(label)} <span class="card__meta">${items.length}건</span></div>
+            ${items.map(({l,i})=>logItemHTML(l,i)).join('')}
+          </div>`;
+        }).join('');
+  }
   document.getElementById('logCount').textContent = d.logs.length + '건';
   syncAdminBtn();
 }
@@ -2605,16 +2645,17 @@ function renderAdminUsersModal(users, editEmail){
     const roleLabel = u.role==='super' ? '전체 관리자' : '사업장 관리자';
     const siteNames = u.role==='super' ? '모든 시설' : ((u.sites||[]).map(id=>{const s=getSite(id);return s?s.name:id;}).join(', ')||'담당 시설 없음');
     return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--surface-line)">
-      <span style="flex:1;font-size:13px"><b>${esc(u.email)}</b><br><span style="color:var(--fg-4)">${roleLabel} · ${esc(siteNames)}</span></span>
-      <button class="btn btn--ghost" style="padding:6px 10px" onclick="openAdminUsers('${esc(u.email)}')">편집</button>
-      <button class="btn btn--danger" style="padding:6px 10px" onclick="deleteAdminUser('${esc(u.email)}')">삭제</button>
+      <span style="flex:1;min-width:0;font-size:13px"><b>${esc(u.email)}</b><br><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-4)" title="${esc(siteNames)}">${roleLabel} · ${esc(siteNames)}</span></span>
+      <button class="btn btn--ghost" style="padding:6px 10px;flex:none" onclick="openAdminUsers('${esc(u.email)}')">편집</button>
+      <button class="btn btn--danger" style="padding:6px 10px;flex:none" onclick="deleteAdminUser('${esc(u.email)}')">삭제</button>
     </div>`;
   }).join('') || `<p style="color:var(--fg-4);font-size:13px;margin:0">등록된 관리자가 없습니다.</p>`;
 
   const siteChecks = DB.sites.map(st=>`
-    <label style="display:flex;align-items:center;gap:6px;font-size:13px;padding:4px 0">
-      <input type="checkbox" class="auSite" value="${st.id}" ${editing&&(editing.sites||[]).includes(st.id)?'checked':''}> ${esc(st.name)}
-    </label>`).join('') || '<span class="hint">등록된 시설이 없습니다.</span>';
+      <label style="display:flex;align-items:center;gap:7px;font-size:13px;padding:6px 6px;border-radius:8px;white-space:nowrap;overflow:hidden;cursor:pointer" title="${esc(st.name)}">
+        <input type="checkbox" class="auSite" value="${st.id}" style="flex:none;width:15px;height:15px" ${editing&&(editing.sites||[]).includes(st.id)?'checked':''}>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(st.name)}</span>
+      </label>`).join('');
 
   openModal('관리자 계정 관리', `
     <div style="max-height:220px;overflow:auto;margin-bottom:10px">${rows}</div>
@@ -2628,7 +2669,11 @@ function renderAdminUsersModal(users, editEmail){
         <option value="super" ${editing&&editing.role==='super'?'selected':''}>전체 관리자 (모든 시설)</option>
       </select></div>
     <div class="fld" id="auSites" ${editing&&editing.role==='super'?'hidden':''}>
-      <label>담당 시설</label>${siteChecks}</div>`,
+      <label>담당 시설</label>
+      ${siteChecks
+        ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:2px 4px;max-height:190px;overflow:auto;border:1px solid var(--surface-line);border-radius:10px;padding:4px">${siteChecks}</div>`
+        : '<span class="hint">등록된 시설이 없습니다.</span>'}
+    </div>`,
     `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>
      <button class="btn btn--primary" onclick="saveAdminUser()">${editing?'수정 저장':'추가'}</button>`);
 }
@@ -2770,7 +2815,7 @@ function submitNote(){
 
 function selectEquipment(key){
   if(!equipmentData[key] || key===currentKey) return;
-  currentKey = key;
+  currentKey = key; logsExpanded=false;
   document.querySelectorAll('.seg').forEach(b=>{
     const on = b.dataset.key===key;
     b.setAttribute('aria-selected', on);
@@ -3078,6 +3123,41 @@ function toast(msg,tone){
 function stamp(){
   const n=new Date(),p=x=>String(x).padStart(2,'0');
   return `${n.getFullYear()}-${p(n.getMonth()+1)}-${p(n.getDate())} ${p(n.getHours())}:${p(n.getMinutes())}`;
+}
+
+/* ============================================================
+   점검이력 엑셀 내보내기
+   ============================================================ */
+function toneLabel(t){ return t==='warn'?'주의':(t==='info'?'정보':'정상'); }
+function safeFileName(s){ return String(s||'').replace(/[\\/:*?"<>|]/g,'_').trim() || '파일'; }
+function exportEqLogs(){
+  if(!requireAdmin()) return;
+  if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
+  const d=equipmentData[currentKey]; if(!d) return;
+  const rows=(d.logs||[]).map(l=>({날짜:l.d, 내용:l.t, 상태:toneLabel(l.tone)}));
+  if(!rows.length) return toast('내보낼 점검 이력이 없습니다.','warn');
+  const ws=XLSX.utils.json_to_sheet(rows);
+  ws['!cols']=[{wch:18},{wch:56},{wch:8}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, safeFileName(d.short||d.title).slice(0,28));
+  const st=getSite(currentSite);
+  XLSX.writeFile(wb, `${safeFileName(st&&st.name)}_${safeFileName(d.short||d.title)}_점검이력.xlsx`);
+}
+function exportSiteLogs(){
+  if(!requireAdmin()) return;
+  if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
+  const st=getSite(currentSite); if(!st) return;
+  const rows=[];
+  Object.values(st.equipment||{}).forEach(d=>{
+    (d.logs||[]).forEach(l=>{ rows.push({설비명:d.short||d.title, 날짜:l.d, 내용:l.t, 상태:toneLabel(l.tone)}); });
+  });
+  if(!rows.length) return toast('내보낼 점검 이력이 없습니다.','warn');
+  rows.sort((a,b)=> a.설비명===b.설비명 ? (a.날짜<b.날짜?1:-1) : (a.설비명>b.설비명?1:-1));
+  const ws=XLSX.utils.json_to_sheet(rows);
+  ws['!cols']=[{wch:16},{wch:18},{wch:56},{wch:8}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '점검이력');
+  XLSX.writeFile(wb, `${safeFileName(st.name)}_전체_점검이력.xlsx`);
 }
 
 document.getElementById('themeBtn').addEventListener('click',()=>{
