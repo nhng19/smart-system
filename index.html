@@ -1376,6 +1376,8 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
 .check__t{font-size:12.5px;line-height:1.6;font-weight:600;color:var(--fg-2);transition:all .2s var(--ease)}
 .check:has(input:checked){border-color:var(--brand-200);background:var(--brand-50)}
 .check:has(input:checked) .check__t{color:var(--fg-4);text-decoration:line-through;text-decoration-color:var(--fg-4)}
+.check.is-missing{border-color:var(--warn-fg);box-shadow:0 0 0 1px var(--warn-bd) inset;animation:checkShake .4s var(--ease)}
+@keyframes checkShake{0%,100%{transform:translateX(0)}20%{transform:translateX(-4px)}40%{transform:translateX(4px)}60%{transform:translateX(-3px)}80%{transform:translateX(3px)}}
 
 /* ============ Buttons ============ */
 .btn{
@@ -2529,8 +2531,14 @@ function logItemHTML(l, i){
     </div>`;
 }
 function toggleLogsExpanded(){
+  const anchor=document.getElementById('logs');
+  const beforeTop = anchor ? anchor.getBoundingClientRect().top : null;
   logsExpanded=!logsExpanded;
   const d=equipmentData[currentKey]; if(d) renderLogs(d);
+  if(beforeTop!==null){
+    const afterTop = document.getElementById('logs').getBoundingClientRect().top;
+    window.scrollBy(0, afterTop-beforeTop);
+  }
 }
 function renderLogs(d){
   const box=document.getElementById('logs');
@@ -2646,8 +2654,8 @@ function renderAdminUsersModal(users, editEmail){
     const siteNames = u.role==='super' ? '모든 시설' : ((u.sites||[]).map(id=>{const s=getSite(id);return s?s.name:id;}).join(', ')||'담당 시설 없음');
     return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--surface-line)">
       <span style="flex:1;min-width:0;font-size:13px"><b>${esc(u.email)}</b><br><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-4)" title="${esc(siteNames)}">${roleLabel} · ${esc(siteNames)}</span></span>
-      <button class="btn btn--ghost" style="padding:6px 10px;flex:none" onclick="openAdminUsers('${esc(u.email)}')">편집</button>
-      <button class="btn btn--danger" style="padding:6px 10px;flex:none" onclick="deleteAdminUser('${esc(u.email)}')">삭제</button>
+      <button class="btn btn--ghost" style="width:auto;flex:none;padding:6px 10px" onclick="openAdminUsers('${esc(u.email)}')">편집</button>
+      <button class="btn btn--danger" style="width:auto;flex:none;padding:6px 10px" onclick="deleteAdminUser('${esc(u.email)}')">삭제</button>
     </div>`;
   }).join('') || `<p style="color:var(--fg-4);font-size:13px;margin:0">등록된 관리자가 없습니다.</p>`;
 
@@ -2810,7 +2818,7 @@ function submitNote(){
   const entry={t:'특이사항 · '+txt, d:stamp(), tone:'warn', kind:'note'};
   if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
   el.value='';
-  toast('특이사항을 이력에 기록했습니다.');
+  toast('특이사항을 기록했습니다. 잘못 입력했다면 이력 목록 맨 위 ✕에서 삭제할 수 있어요.','ok',4000);
 }
 
 function selectEquipment(key){
@@ -2891,9 +2899,16 @@ function updateProgress(){
 
 function submitChecklist(){
   const boxes=[...document.querySelectorAll('[data-check]')];
-  const done=boxes.filter(b=>b.checked).length;
-  if(done<boxes.length){
-    toast(`미완료 항목이 ${boxes.length-done}건 있습니다.`,'warn');
+  const missing=boxes.filter(b=>!b.checked);
+  boxes.forEach(b=>b.closest('.check').classList.remove('is-missing'));
+  if(missing.length){
+    missing.forEach(b=>b.closest('.check').classList.add('is-missing'));
+    const firstText=missing[0].closest('.check').querySelector('.check__t').textContent;
+    const msg = missing.length===1
+      ? `미완료 항목: ${firstText}`
+      : `미완료 항목 ${missing.length}건 (예: ${firstText} 외)`;
+    toast(msg,'warn');
+    missing[0].closest('.check').scrollIntoView({behavior:'smooth',block:'center'});
     return;
   }
   const d=equipmentData[currentKey];
@@ -3111,13 +3126,13 @@ function printLabel(){
 /* ============================================================
    TOAST / THEME / UTIL
    ============================================================ */
-function toast(msg,tone){
+function toast(msg,tone,duration){
   const wrap=document.getElementById('toasts');
   const el=document.createElement('div');
   el.className='toast';
   el.innerHTML=`<span class="toast__ico ${tone==='warn'?'is-warn':''}">${svg(tone==='warn'?I.alert:I.check)}</span><span>${msg}</span>`;
   wrap.appendChild(el);
-  setTimeout(()=>{el.classList.add('is-out');setTimeout(()=>el.remove(),300)},2600);
+  setTimeout(()=>{el.classList.add('is-out');setTimeout(()=>el.remove(),300)},duration||2600);
 }
 
 function stamp(){
