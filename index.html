@@ -2650,20 +2650,27 @@ function saveSettings(){
 /* ---- 관리자 계정 관리 (전체 관리자 전용) ---- */
 function openAdminUsers(editEmail){
   if(!requireSuper()) return;
-  FB.getDocs(FB.collection(FB.db,'gnfm_users')).then(snap=>{
+  Promise.all([
+    FB.getDocs(FB.collection(FB.db,'gnfm_users')),
+    FB.getDoc(FB.doc(FB.db,'gnfm_meta','bootstrap'))
+  ]).then(([snap,bs])=>{
     const users = snap.docs.map(d=>Object.assign({email:d.id}, d.data()));
-    renderAdminUsersModal(users, editEmail||null);
+    const founderEmail = bs.exists() ? (bs.data().by||'').toLowerCase() : null;
+    renderAdminUsersModal(users, editEmail||null, founderEmail);
   }).catch(e=>{ console.warn(e); toast('목록을 불러오지 못했습니다.','warn'); });
 }
-function renderAdminUsersModal(users, editEmail){
+function renderAdminUsersModal(users, editEmail, founderEmail){
   const editing = editEmail ? users.find(u=>u.email===editEmail) : null;
   const rows = users.map(u=>{
     const roleLabel = u.role==='super' ? '전체 관리자' : '사업장 관리자';
     const siteNames = u.role==='super' ? '모든 시설' : ((u.sites||[]).map(id=>{const s=getSite(id);return s?s.name:id;}).join(', ')||'담당 시설 없음');
+    const isFounder = founderEmail && u.email.toLowerCase()===founderEmail;
     return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--surface-line)">
-      <span style="flex:1;min-width:0;font-size:13px"><b>${esc(u.email)}</b><br><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-4)" title="${esc(siteNames)}">${roleLabel} · ${esc(siteNames)}</span></span>
+      <span style="flex:1;min-width:0;font-size:13px"><b>${esc(u.email)}</b>${isFounder?' <span class="badge badge--info" style="vertical-align:middle"><span class="badge__dot"></span>최초 관리자</span>':''}<br><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-4)" title="${esc(siteNames)}">${roleLabel} · ${esc(siteNames)}</span></span>
       <button class="btn btn--ghost" style="width:auto;flex:none;padding:6px 10px" onclick="openAdminUsers('${esc(u.email)}')">편집</button>
-      <button class="btn btn--danger" style="width:auto;flex:none;padding:6px 10px" onclick="deleteAdminUser('${esc(u.email)}')">삭제</button>
+      ${isFounder
+        ? `<button class="btn btn--ghost" style="width:auto;flex:none;padding:6px 10px;opacity:.5;cursor:not-allowed" onclick="toast('최초 관리자는 삭제할 수 없습니다.','warn')" title="최초 관리자는 삭제할 수 없습니다">삭제</button>`
+        : `<button class="btn btn--danger" style="width:auto;flex:none;padding:6px 10px" onclick="deleteAdminUser('${esc(u.email)}')">삭제</button>`}
     </div>`;
   }).join('') || `<p style="color:var(--fg-4);font-size:13px;margin:0">등록된 관리자가 없습니다.</p>`;
 
@@ -2704,11 +2711,18 @@ function saveAdminUser(){
     .catch(e=>{ console.warn(e); toast('저장에 실패했습니다.','warn'); });
 }
 function deleteAdminUser(email){
-  askConfirm(`"${email}" 관리자 권한을 삭제할까요? (로그인 계정 자체는 Firebase 콘솔에서 별도로 삭제해야 합니다)`, ()=>{
-    FB.deleteDoc(FB.doc(FB.db,'gnfm_users',email))
-      .then(()=>{ toast('삭제했습니다.','warn'); openAdminUsers(); })
-      .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
-  });
+  FB.getDoc(FB.doc(FB.db,'gnfm_meta','bootstrap')).then(bs=>{
+    const founderEmail = bs.exists() ? (bs.data().by||'').toLowerCase() : null;
+    if(founderEmail && email.toLowerCase()===founderEmail){
+      toast('최초 관리자는 삭제할 수 없습니다.','warn');
+      return;
+    }
+    askConfirm(`"${email}" 관리자 권한을 삭제할까요? (로그인 계정 자체는 Firebase 콘솔에서 별도로 삭제해야 합니다)`, ()=>{
+      FB.deleteDoc(FB.doc(FB.db,'gnfm_users',email))
+        .then(()=>{ toast('삭제했습니다.','warn'); openAdminUsers(); })
+        .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
+    });
+  }).catch(e=>{ console.warn(e); toast('확인 중 오류가 발생했습니다.','warn'); });
 }
 
 function syncAdminBtn(){
