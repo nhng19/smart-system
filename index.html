@@ -2100,7 +2100,8 @@ function pushSite(siteId){
 }
 function removeSiteDoc(siteId){
   if(!cloudOn) return;
-  FB.deleteDoc(FB.doc(FB.db,'gnfm_sites',siteId)).catch(e=>console.warn('삭제 실패',e));
+  FB.deleteDoc(FB.doc(FB.db,'gnfm_sites',siteId))
+    .catch(e=>{ console.warn('삭제 실패',e); toast('공유 저장소에서는 삭제가 실패했습니다. 다른 기기에는 남아있을 수 있어요 — 연결 확인 후 다시 시도해 주세요.','warn',4500); });
 }
 
 /* 클라우드 이력을 설비별로 배분 */
@@ -2178,6 +2179,7 @@ function resolveRole(user){
 function cloudStart(){
   FB=window.__FB; if(!FB) return;
   cloudOn=true; setNet('연결 중…');
+  let sitesEverConnected=false;
 
   /* 로그인 상태를 서버 기준으로 동기화 */
   if(FB.onAuth) FB.onAuth(FB.auth, resolveRole);
@@ -2189,7 +2191,11 @@ function cloudStart(){
       fixDB(DB); applyCloudLogs(); saveDB(); cloudRefresh();
     }
     setNet('공유중');
-  }, err=>{ console.warn(err); cloudOn=false; setNet('오프라인','is-err'); });
+    sitesEverConnected=true;
+  }, err=>{
+    console.warn(err); cloudOn=false; setNet('오프라인','is-err');
+    if(sitesEverConnected) toast('네트워크 연결이 끊겼습니다. 입력 내용은 이 기기에 임시 저장됩니다.','warn',4000);
+  });
 
   FB.onSnapshot(FB.collection(FB.db,'gnfm_logs'), snap=>{
     CLOUD_LOGS=snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
@@ -2197,12 +2203,12 @@ function cloudStart(){
   }, err=>{ console.warn(err); });
 }
 
-function addCloudLog(entry){
+function addCloudLog(entry, onFail){
   if(!cloudOn) return false;
   FB.addDoc(FB.collection(FB.db,'gnfm_logs'),
     {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone,
      kind:entry.kind||'note', ts:Date.now()})
-    .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다.','warn'); });
+    .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다. 입력한 내용을 복구했어요 — 다시 시도해 주세요.','warn',4000); if(onFail) onFail(); });
   return true;
 }
 
@@ -2492,6 +2498,8 @@ function render(key){
           <div class="progressrow__meta">
             <div class="progressrow__t" id="progT">점검 항목 0 / ${d.checklist.length} 완료</div>
             <div class="progressrow__s">모든 항목 확인 후 결과를 제출하세요.</div>
+            <div class="progressrow__s" style="margin-top:4px">점검자: <b id="inspectorNameShow">${esc(getInspectorName()||'미입력')}</b>
+              <a onclick="askInspectorName(()=>{document.getElementById('inspectorNameShow').textContent=getInspectorName();})" style="color:var(--brand-600);cursor:pointer;text-decoration:underline;margin-left:4px">변경</a></div>
           </div>
         </div>
         <div class="checks">${checksHtml}</div>
@@ -2512,7 +2520,7 @@ function render(key){
         <textarea class="noteta" id="noteInput" placeholder="점검 중 발견한 이상 징후, 누수·소음·진동, 임시 조치 내용 등을 자유롭게 적어 주세요."></textarea>
       </div>
       <div class="card__foot">
-        <button class="btn btn--primary" onclick="submitNote()">${svg(I.send)}특이사항 등록</button>
+        <button class="btn btn--primary" id="noteSubmitBtn" onclick="submitNote()">${svg(I.send)}특이사항 등록</button>
       </div>
     </div>
   `;
@@ -2801,24 +2809,33 @@ function deleteLog(i){
   askConfirm(`"${target.t}" 이력을 삭제할까요?`, ()=>{
     if(cloudOn && target.id){
       FB.deleteDoc(FB.doc(FB.db,'gnfm_logs',target.id))
-        .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
+        .then(()=>{ toast('점검 이력을 삭제했습니다.','warn'); })
+        .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다. 연결을 확인 후 다시 시도해 주세요.','warn',4000); });
     }else{
       d.logs.splice(i,1); saveDB(); render(currentKey);
+      toast('점검 이력을 삭제했습니다.','warn');
     }
-    toast('점검 이력을 삭제했습니다.','warn');
   });
 }
 
 /* ---- 특이사항 등록 ---- */
 function submitNote(){
+  const btn=document.getElementById('noteSubmitBtn');
+  if(btn && btn.disabled) return; // 이미 처리 중 - 중복 클릭 방지
   const el=document.getElementById('noteInput'); if(!el) return;
   const txt=el.value.trim();
   if(!txt) return toast('특이사항 내용을 입력해 주세요.','warn');
   const d=equipmentData[currentKey]; if(!d) return;
-  const entry={t:'특이사항 · '+txt, d:stamp(), tone:'warn', kind:'note'};
-  if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
-  el.value='';
-  toast('특이사항을 기록했습니다. 잘못 입력했다면 이력 목록 맨 위 ✕에서 삭제할 수 있어요.','ok',4000);
+  if(!getInspectorName()){ askInspectorName(()=>submitNote()); return; }
+  const who=getInspectorName();
+  const entry={t:`특이사항(${who}) · `+txt, d:stamp(), tone:'warn', kind:'note'};
+  if(btn) btn.disabled=true;
+  const wasCloud = addCloudLog(entry, ()=>{ el.value=txt; }); // 실패 시 입력값 복구
+  if(!wasCloud){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
+  else { el.value=''; }
+  if(wasCloud) toast('특이사항을 기록했습니다. 잘못 입력했다면 이력 목록 맨 위 ✕에서 삭제할 수 있어요.','ok',4000);
+  else toast('특이사항을 기록했습니다.');
+  if(btn) setTimeout(()=>{ btn.disabled=false; },1500);
 }
 
 function selectEquipment(key){
@@ -2898,6 +2915,8 @@ function updateProgress(){
 }
 
 function submitChecklist(){
+  const submitBtn=document.getElementById('submitBtn');
+  if(submitBtn && submitBtn.disabled) return; // 이미 처리 중 - 중복 클릭 방지
   const boxes=[...document.querySelectorAll('[data-check]')];
   const missing=boxes.filter(b=>!b.checked);
   boxes.forEach(b=>b.closest('.check').classList.remove('is-missing'));
@@ -2911,11 +2930,16 @@ function submitChecklist(){
     missing[0].closest('.check').scrollIntoView({behavior:'smooth',block:'center'});
     return;
   }
+  if(!getInspectorName()){ askInspectorName(()=>submitChecklist()); return; }
+  if(submitBtn) submitBtn.disabled=true;
   const d=equipmentData[currentKey];
-  const entry={t:'현장 점검 완료 · 담당자 제출',d:stamp(),tone:'ok',kind:'check'};
-  if(!addCloudLog(entry)){ d.logs.unshift(entry); saveDB(); render(currentKey); }
+  const who=getInspectorName();
+  const entry={t:`현장 점검 완료 · ${who} 제출`,d:stamp(),tone:'ok',kind:'check'};
+  const wasCloud = addCloudLog(entry, ()=>{ boxes.forEach(b=>b.checked=true); updateProgress(); });
+  if(!wasCloud){ d.logs.unshift(entry); saveDB(); render(currentKey); }
   else { boxes.forEach(b=>b.checked=false); updateProgress(); }
   toast('점검 결과가 기록되었습니다.');
+  if(submitBtn) setTimeout(()=>{ submitBtn.disabled=false; },1500);
 }
 
 
@@ -3126,6 +3150,32 @@ function printLabel(){
 /* ============================================================
    TOAST / THEME / UTIL
    ============================================================ */
+/* 점검자 이름 — 기기에 저장해두고 최초 1회만 물어봄 */
+function getInspectorName(){
+  try{ return localStorage.getItem('gnfm-inspector')||''; }catch(e){ return ''; }
+}
+function setInspectorName(n){
+  try{ localStorage.setItem('gnfm-inspector', n); }catch(e){}
+}
+function askInspectorName(onDone){
+  const saved=getInspectorName();
+  openModal('점검자 이름', `
+    <div class="fld"><label>이름 (또는 소속·직책)</label>
+      <input id="inspectorNameInput" type="text" value="${esc(saved)}" placeholder="예: 김남형" maxlength="20">
+      <span class="hint">이 기기에 저장되어 다음 점검부터는 다시 묻지 않습니다. 나중에 설정에서 바꿀 수 있어요.</span></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" id="inspectorNameGo" onclick="confirmInspectorName()">확인</button>`);
+  window.__inspectorNameCb = onDone;
+}
+function confirmInspectorName(){
+  const v=val('inspectorNameInput').trim();
+  if(!v){ toast('이름을 입력해 주세요.','warn'); return; }
+  setInspectorName(v);
+  closeModal();
+  const cb=window.__inspectorNameCb; window.__inspectorNameCb=null;
+  if(cb) cb(v);
+}
+
 function toast(msg,tone,duration){
   const wrap=document.getElementById('toasts');
   const el=document.createElement('div');
