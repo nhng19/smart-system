@@ -2001,8 +2001,44 @@ const store={
 };
 
 const uid = p => p+'_'+Math.random().toString(36).slice(2,8);
-/* 샌드박스(iframe 미리보기)에서는 주소 변경·확인창이 차단될 수 있으므로 안전하게 감싼다 */
-function safeURL(q){ try{ history.replaceState(null,'',location.pathname+(q||'')); }catch(e){} }
+/* 샌드박스(iframe 미리보기)에서는 주소 변경·확인창이 차단될 수 있으므로 안전하게 감싼다.
+   push=true면 브라우저 히스토리에 새 항목을 쌓아 크롬 뒤로가기로 이전 화면으로 돌아갈 수 있게 한다.
+   최초 진입(부팅) 시에는 push하지 않아 뒤로가기를 누르면 앱을 벗어나 원래 있던 페이지로 가도록 둔다. */
+let _urlBooting = true;
+let _suppressPop = false;
+let _navDepth = 0; /* 부팅 이후 앱 안에서 실제로 pushState한 횟수 */
+function safeURL(q, push){
+  try{
+    const url = location.pathname+(q||'');
+    if(push && !_urlBooting && !_suppressPop){ history.pushState({gnfm:1}, '', url); _navDepth++; }
+    else history.replaceState({gnfm:1}, '', url);
+  }catch(e){}
+}
+/* 앱 안 '‹ 뒤로' 버튼: 되돌아갈 히스토리가 있으면 실제로 back()해서 크롬 뒤로가기와 동일하게 동작시키고,
+   없으면(예: 새로고침 등으로 히스토리가 리셋된 경우) 폴백으로 목적지 화면을 직접 그린다. */
+function goBackTo(fallbackFn){
+  if(_navDepth>0) history.back();
+  else fallbackFn();
+}
+/* 뒤로/앞으로가기 시 주소(site/eq)에 맞는 화면을 다시 그린다 */
+function routeFromURL(){
+  const q=new URLSearchParams(location.search);
+  const sid=q.get('site'), eq=q.get('eq');
+  _suppressPop = true;
+  if(sid && getSite(sid)){
+    enterSite(sid);
+    if(eq && equipmentData[eq]) openEquipment(eq);
+  } else {
+    showRoom();
+  }
+  _suppressPop = false;
+}
+addEventListener('popstate', ()=>{
+  if(_suppressPop) return;
+  /* goBackTo()가 아니라 사용자가 크롬 자체 뒤로가기 버튼을 직접 눌러서 온 경우에도 깊이를 맞춘다 */
+  if(_navDepth>0) _navDepth--;
+  routeFromURL();
+});
 /* 샌드박스에서는 브라우저 confirm()이 무조건 취소로 처리되므로 자체 확인창을 쓴다 */
 let _confirmCb=null;
 function askConfirm(msg, onYes){
@@ -2267,7 +2303,7 @@ function showRoom(){
       화면이 비어 보이거나 내용이 깨진 경우
       <a onclick="resetAll()" style="color:var(--brand-600);font-weight:800;cursor:pointer">기본 설비 데이터로 되돌리기</a>
     </p>`:''}`;
-  safeURL('');
+  safeURL('', true);
   try{ scrollTo({top:0}); }catch(e){}
 }
 
@@ -2277,7 +2313,7 @@ function enterSite(id){
   document.getElementById('listPane').hidden=false;
   document.getElementById('detailPane').hidden=true;
   document.querySelector('.eqbar').hidden=true;
-  setCrumbs(`<button class="cb" onclick="showRoom()" aria-label="뒤로">${svg(BACK_ICON)}</button>
+  setCrumbs(`<button class="cb" onclick="goBackTo(showRoom)" aria-label="뒤로">${svg(BACK_ICON)}</button>
     <b>${esc(st.name)}</b>`);
   document.title = `${st.name} · GN-FM 스마트 시설관리`;
   const keys=Object.keys(equipmentData);
@@ -2326,7 +2362,7 @@ function enterSite(id){
     <div class="tiles">${tiles || `<div class="empty">이 시설에 등록된 설비가 없습니다.${canEditSite(id)?'<br>아래에서 첫 설비를 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}</div>`}
       ${canEditSite(id)?`<div class="tile is-add" onclick="openEqEditor()">${svg(PLUS_ICON)} 설비 추가</div>`:''}
     </div>`;
-  safeURL('?site='+id);
+  safeURL('?site='+id, true);
   try{ scrollTo({top:0}); }catch(e){}
 }
 
@@ -2340,11 +2376,11 @@ function openEquipment(key){
   document.getElementById('listPane').hidden=true;
   document.getElementById('detailPane').hidden=false;
   document.querySelector('.eqbar').hidden=false;
-  setCrumbs(`<button class="cb" onclick="enterSite('${currentSite}')" aria-label="뒤로">${svg(BACK_ICON)}</button>
+  setCrumbs(`<button class="cb" onclick="goBackTo(()=>enterSite('${currentSite}'))" aria-label="뒤로">${svg(BACK_ICON)}</button>
     <a onclick="enterSite('${currentSite}')">${esc(st?st.name:'')}</a><span class="sep">›</span>
     <b id="crumbNow">${esc(equipmentData[key].short||'')}</b>`);
   renderSegs(); render(key);
-  safeURL('?site='+currentSite+'&eq='+key);
+  safeURL('?site='+currentSite+'&eq='+key, true);
   try{ scrollTo({top:0}); }catch(e){}
 }
 
@@ -3294,10 +3330,15 @@ document.getElementById('themeBtn').addEventListener('click',()=>{
   const q=new URLSearchParams(location.search);
   const sid=q.get('site'), eq=q.get('eq');
   if(sid && getSite(sid)){
+    /* 화면은 그리지 않고 "시설 목록"을 히스토리 맨 아래에 깔아만 둔다 —
+       이렇게 해두면 QR로 설비 상세에 바로 들어와도 뒤로가기를 눌렀을 때 시설 목록으로 갈 수 있다. */
+    try{ history.replaceState({gnfm:1}, '', location.pathname); }catch(e){}
+    _urlBooting = false;
     enterSite(sid);
     if(eq && equipmentData[eq]) openEquipment(eq);
   } else {
     showRoom();
+    _urlBooting = false;
   }
 })();
 </script>
