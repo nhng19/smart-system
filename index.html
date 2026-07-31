@@ -1780,7 +1780,6 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
     <div class="pl-name" id="plName"></div>
     <div class="pl-cat" id="plCat"></div>
     <div class="pl-qr" id="plQr"></div>
-    <div class="pl-id" id="plId"></div>
     <div class="pl-guide">휴대폰 카메라로 QR을 스캔하면 조작 절차·점검표가 열립니다.</div>
   </div>
 </div>
@@ -1984,6 +1983,17 @@ const CYCLES = {
   month:{label:'한달', months:1}
 };
 
+/* 점검 주기: 기본 CYCLES 외에 "custom:N" 형태(며칠 직접 입력)도 지원한다.
+   저장 필드(cycle)는 문자열 하나로 유지 — 별도 필드를 늘리지 않는다. */
+function isCustomCycle(v){ return typeof v==='string' && /^custom:\d+$/.test(v); }
+function customCycleDays(v){ const m=/^custom:(\d+)$/.exec(v||''); return m ? +m[1] : 0; }
+function cycleInfo(v){
+  if(CYCLES[v]) return CYCLES[v];
+  if(isCustomCycle(v)){ const n=customCycleDays(v); return {label:n+'일', days:n}; }
+  return null;
+}
+function isValidCycle(v){ return !!CYCLES[v] || (isCustomCycle(v) && customCycleDays(v)>0); }
+
 const STORE_KEY='gnfm-db-v4';
 const store={
   get(){ try{ const r=localStorage.getItem(STORE_KEY); return r?JSON.parse(r):null; }catch(e){ return null; } },
@@ -2018,7 +2028,7 @@ function fixEq(d){
   d.short = d.short || d.title;
   d.tag = d.tag || ''; d.category = d.category || '설비';
   d.icon = d.icon || I.gear;
-  d.cycle = CYCLES[d.cycle] ? d.cycle : '';
+  d.cycle = isValidCycle(d.cycle) ? d.cycle : '';
   if(!d.status || typeof d.status!=='object') d.status={label:'정상 가동',tone:'ok'};
   d.status.label = d.status.label || '정상 가동';
   d.status.tone  = d.status.tone  || 'ok';
@@ -2271,18 +2281,32 @@ function enterSite(id){
     <b>${esc(st.name)}</b>`);
   document.title = `${st.name} · GN-FM 스마트 시설관리`;
   const keys=Object.keys(equipmentData);
-  const tiles = keys.map(k=>{
+  /* 점검이 급한 설비가 위로 오도록 정렬: 미점검 > 기한초과(D+) > 임박(D-DAY/D-1) > 여유(D-2 이상) > 주기 미설정 > 오늘 점검완료.
+     같은 그룹 안에서는 기존 등록 순서를 유지한다. */
+  const urgencyRank = d=>{
+    const u=dueInfo(d);
+    if(!u) return 4;             // 점검 주기 미설정
+    if(u.doneToday) return 5;    // 오늘 이미 점검 완료 - 안심해도 되니 맨 뒤로
+    if(u.none) return 0;         // 미점검
+    if(u.diff<0) return 1;       // 기한 초과
+    if(u.diff<=1) return 2;      // 오늘~내일 임박
+    return 3;                    // 여유 있음
+  };
+  const sortedKeys = keys
+    .map((k,idx)=>({k,idx,rank:urgencyRank(equipmentData[k])}))
+    .sort((a,b)=> a.rank-b.rank || a.idx-b.idx)
+    .map(x=>x.k);
+  const tiles = sortedKeys.map(k=>{
     const d=equipmentData[k];
     const tone=(d.status&&d.status.tone==='ok')?'ok':'warn';
     return `<div class="tile" onclick="openEquipment('${k}')">
       <span class="tile__ico">${svg(iconPath(d.icon))}</span>
       <span class="tile__b">
         <span class="tile__n">${esc(d.short||d.title)}</span>
-        <span class="tile__s">${esc(d.category||'')} · ${esc(d.tag||'')}</span>
         <span class="tile__tags">
           <span class="badge badge--${tone==='ok'?'ok':'warn'}">${esc((d.status&&d.status.label)||'상태 미지정')}</span>
           ${(()=>{const u=dueInfo(d); return u
-              ? `<span class="badge badge--${u.tone==='ok'?'info':u.tone}">${u.none?'미점검':'차기점검 '+u.label}</span>`
+              ? `<span class="badge badge--${u.tone==='ok'?'info':u.tone}">${u.none?'미점검':(u.doneToday?u.label:'차기점검 '+u.label)}</span>`
               : `<span class="badge badge--info">점검 ${(d.checklist||[]).length}항목</span>`;})()}
         </span>
       </span>
@@ -2345,13 +2369,17 @@ function lastCheckDate(d){
   return best;
 }
 function dueInfo(d){
-  const c=CYCLES[d&&d.cycle]; if(!c) return null;
+  const c=cycleInfo(d&&d.cycle); if(!c) return null;
   const last=lastCheckDate(d);
   if(!last) return {label:'미점검', tone:'danger', diff:null, cycle:c.label, none:true};
+  const today=new Date(); today.setHours(0,0,0,0);
+  const lastDay=new Date(last); lastDay.setHours(0,0,0,0);
+  if(lastDay.getTime()===today.getTime()){
+    return {diff:0, cycle:c.label, due:null, label:'오늘 점검완료', tone:'ok', doneToday:true};
+  }
   const due=new Date(last);
   if(c.months) due.setMonth(due.getMonth()+c.months); else due.setDate(due.getDate()+c.days);
   due.setHours(0,0,0,0);
-  const today=new Date(); today.setHours(0,0,0,0);
   const diff=Math.round((due-today)/86400000);
   return {
     diff, cycle:c.label, due,
@@ -2388,7 +2416,7 @@ function render(key){
   if(_due){
     /* 자동 계산 항목과 겹치는 수동 입력만 제거하고, 나머지는 그대로 보존 */
     _kpi = _kpi.filter(x=>!/차기점검|다음점검|^주기$|점검주기|역세주기|점검\s*주기/.test(x.k||''));
-    _kpi.unshift({k:'차기점검', v:_due.label, u:_due.cycle, tone:_due.tone});
+    _kpi.unshift({k: _due.doneToday?'점검 상태':'차기점검', v:_due.label, u:_due.doneToday?'':_due.cycle, tone:_due.tone});
   }
   _kpi = _kpi.slice(0,3);
   const kpiHtml = _kpi.map(x=>`
@@ -2424,10 +2452,6 @@ function render(key){
               <span class="badge badge--glass"><span class="badge__dot" style="background:${d.status.tone==='ok'?'#3EE58F':'#FFC65C'}"></span>${d.status.label}</span>
             </div>
             <h2>${d.title}</h2>
-            <div class="hero__id">
-              ${svg('<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M14 3h7v7M3 14h7v7"/>','style="width:13px;height:13px"')}
-              ${d.tag}
-            </div>
           </div>
         </div>
       </div>
@@ -3025,19 +3049,22 @@ function openEqEditor(key){
         <input id="eShort" value="${esc(d?d.short:'')}" placeholder="집모기"></div>
     </div>
     <div class="frow">
-      <div class="fld"><label>설비 태그</label>
-        <input id="eTag" value="${esc(d?d.tag:'')}" placeholder="HC-B1-01"></div>
       <div class="fld"><label>분류</label>
         <input id="eCat" value="${esc(d?d.category:'')}" placeholder="수처리 시설"></div>
     </div>
     <div class="frow">
       <div class="fld"><label>아이콘</label><select id="eIcon">${iconOpts}</select></div>
       <div class="fld"><label>점검 주기</label>
-        <select id="eCycle">
+        <select id="eCycle" onchange="document.getElementById('eCycleCustomWrap').style.display=(this.value==='custom')?'block':'none'">
           <option value="" ${!(d&&d.cycle)?'selected':''}>설정 안 함</option>
           ${Object.entries(CYCLES).map(([k,c])=>`<option value="${k}" ${d&&d.cycle===k?'selected':''}>${c.label}</option>`).join('')}
+          <option value="custom" ${d&&isCustomCycle(d.cycle)?'selected':''}>기타(직접 입력)</option>
         </select>
-        <span class="hint">설정하면 마지막 점검일 기준으로 차기점검일이 자동 계산됩니다.</span></div>
+        <span class="hint">설정하면 마지막 점검일 기준으로 차기점검일이 자동 계산됩니다.</span>
+        <div id="eCycleCustomWrap" style="display:${d&&isCustomCycle(d.cycle)?'block':'none'};margin-top:6px">
+          <input id="eCycleCustomDays" type="number" min="1" step="1" value="${d&&isCustomCycle(d.cycle)?customCycleDays(d.cycle):''}" placeholder="며칠마다? 예: 3">
+          <span class="hint">숫자만 입력하세요 (일 단위).</span>
+        </div></div>
       <div class="fld"><label>상태</label>
         <select id="eTone">
           <option value="ok" ${d&&d.status&&d.status.tone==='ok'?'selected':''}>정상 (초록)</option>
@@ -3082,9 +3109,15 @@ function saveEq(key){
   const specs = lines('eSpec').map(l=>{ const a=l.split('|').map(x=>x.trim());
     return {label:a[0]||'', val:a.slice(1).join(' | ')||''}; });
   const video=val('eVideo');
+  let cycleVal = val('eCycle')||'';
+  if(cycleVal==='custom'){
+    const n=parseInt(val('eCycleCustomDays'),10);
+    cycleVal = (n>0) ? ('custom:'+n) : '';
+    if(!(n>0)) toast('점검 주기(일수)를 올바르게 입력해 주세요. 이번엔 "설정 안 함"으로 저장됩니다.','warn',4000);
+  }
   const obj = {
-    title, short: val('eShort')||title, tag: val('eTag'), category: val('eCat')||'설비',
-    icon: val('eIcon')||'gear', cycle: val('eCycle')||'',
+    title, short: val('eShort')||title, category: val('eCat')||'설비',
+    icon: val('eIcon')||'gear', cycle: cycleVal,
     status:{label: val('eStatus')||'정상 가동', tone: val('eTone')||'ok'},
     kpi, specs, videoUrl: video||'#',
     instructions: lines('eStep'), checklist: lines('eCheck'),
@@ -3155,7 +3188,6 @@ function printLabel(){
   const d=equipmentData[currentKey];
   document.getElementById('plName').textContent=d.title;
   document.getElementById('plCat').textContent=d.category;
-  document.getElementById('plId').textContent=d.tag;
   const q=document.getElementById('plQr'); q.innerHTML='';
   new QRCode(q,{text:targetUrl(),width:200,height:200,colorDark:'#000000',colorLight:'#FFFFFF',correctLevel:QRCode.CorrectLevel.H});
   setTimeout(()=>window.print(),260);
