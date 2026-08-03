@@ -1678,6 +1678,7 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
     <div class="appbar__spacer"></div>
     <div class="appbar__actions">
       <span class="live" id="netBadge" title="데이터 연결 상태"><span class="live__dot"></span><span class="live__txt" id="netTxt">운영중</span></span>
+      <button class="adminbtn adminbtn--top" id="dashboardBtn" onclick="openDashboard()" title="대시보드" hidden></button>
       <button class="adminbtn adminbtn--top" id="settingsBtn" onclick="openSettings()" title="설정" hidden></button>
       <button class="adminbtn adminbtn--top" data-admin-btn onclick="toggleAdmin()"></button>
       <button class="icon-btn" id="themeBtn" aria-label="테마 전환" title="다크/라이트 전환">
@@ -1971,6 +1972,7 @@ const ROOM_ICON = '<path d="M3 21h18"/><path d="M5 21V6a1 1 0 0 1 1-1h12a1 1 0 0
 const PLUS_ICON = '<path d="M12 5v14M5 12h14"/>';
 const PEN_ICON  = '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>';
 const GEAR_ICON = I.gear;
+const CHART_ICON = '<path d="M3 3v18h18"/><path d="M7 15v-4"/><path d="M12 15V7"/><path d="M17 15v-6"/>';
 const LOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5"/>';
 const UNLOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 8.9-.8"/>';
 const BACK_ICON = '<path d="M15 18l-6-6 6-6"/>';
@@ -2253,7 +2255,7 @@ function addCloudLog(entry, onFail){
   if(!cloudOn) return false;
   FB.addDoc(FB.collection(FB.db,'gnfm_logs'),
     {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone,
-     kind:entry.kind||'note', ts:Date.now()})
+     kind:entry.kind||'note', inspector:entry.inspector||'', ts:Date.now()})
     .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다. 입력한 내용을 복구했어요 — 다시 시도해 주세요.','warn',4000); if(onFail) onFail(); });
   return true;
 }
@@ -2786,6 +2788,8 @@ function deleteAdminUser(email){
 }
 
 function syncAdminBtn(){
+  const db=document.getElementById('dashboardBtn');
+  if(db){ db.hidden=!isAdmin; db.innerHTML=svg(CHART_ICON)+'<span>대시</span>'; }
   const sb=document.getElementById('settingsBtn');
   if(sb){ sb.hidden=!isAdmin; sb.innerHTML=svg(GEAR_ICON)+'<span>설정</span>'; }
   document.querySelectorAll('[data-admin-btn]').forEach(b=>{
@@ -2902,7 +2906,7 @@ function submitNote(){
   const d=equipmentData[currentKey]; if(!d) return;
   if(!getInspectorName()){ askInspectorName(()=>submitNote()); return; }
   const who=getInspectorName();
-  const entry={t:`특이사항(${who}) · `+txt, d:stamp(), tone:'warn', kind:'note'};
+  const entry={t:`특이사항(${who}) · `+txt, d:stamp(), tone:'warn', kind:'note', inspector:who};
   if(btn) btn.disabled=true;
   const wasCloud = addCloudLog(entry, ()=>{ el.value=txt; }); // 실패 시 입력값 복구
   if(!wasCloud){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
@@ -3008,7 +3012,7 @@ function submitChecklist(){
   if(submitBtn) submitBtn.disabled=true;
   const d=equipmentData[currentKey];
   const who=getInspectorName();
-  const entry={t:`현장 점검 완료 · ${who} 제출`,d:stamp(),tone:'ok',kind:'check'};
+  const entry={t:`현장 점검 완료 · ${who} 제출`,d:stamp(),tone:'ok',kind:'check',inspector:who};
   const wasCloud = addCloudLog(entry, ()=>{ boxes.forEach(b=>b.checked=true); updateProgress(); });
   if(!wasCloud){ d.logs.unshift(entry); saveDB(); render(currentKey); }
   else { boxes.forEach(b=>b.checked=false); updateProgress(); }
@@ -3305,6 +3309,172 @@ function exportSiteLogs(){
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '점검이력');
   XLSX.writeFile(wb, `${safeFileName(st.name)}_전체_점검이력.xlsx`);
+}
+
+/* ============================================================
+   관리자 대시보드 & 리포트
+   ============================================================ */
+/* inspector 필드는 나중에 추가된 것이라, 그 이전 기록은 본문에서 이름을 뽑아 쓴다.
+   저장 형식: "현장 점검 완료 · 홍길동 제출" / "특이사항(홍길동) · ..." */
+function logInspector(log){
+  if(log.inspector) return log.inspector;
+  const t = log.t||'';
+  const m = /현장 점검 완료 · (.+?) 제출/.exec(t) || /특이사항\((.+?)\)/.exec(t);
+  return m ? m[1] : '(이름 미기록)';
+}
+
+/* 설비 하나의 점검 상태를 4가지로 분류한다.
+   ok = 주기 내, overdue = 기한 초과, none = 한 번도 점검 안 함, nocycle = 주기 미설정 */
+function eqStatus(eq){
+  const u = dueInfo(eq);
+  if(!u) return 'nocycle';
+  if(u.none) return 'none';
+  if(u.diff!==null && u.diff<0) return 'overdue';
+  return 'ok';
+}
+
+function calculateDashboardStats(){
+  let totalEq=0, okEq=0, overdueEq=0, noneEq=0, nocycleEq=0;
+  const sitesStats=[], inspectorStats={}, alerts=[];
+
+  DB.sites.forEach(st=>{
+    const eqs = Object.entries(st.equipment||{});
+    let sOk=0, sOverdue=0, sNone=0;
+    eqs.forEach(([key,eq])=>{
+      totalEq++;
+      const s = eqStatus(eq);
+      if(s==='ok'){ okEq++; sOk++; }
+      else if(s==='overdue'){ overdueEq++; sOverdue++; alerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title, status:'기한초과', label:dueInfo(eq).label}); }
+      else if(s==='none'){ noneEq++; sNone++; alerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title, status:'미점검', label:'-'}); }
+      else nocycleEq++;
+    });
+    if(eqs.length) sitesStats.push({name:st.name, total:eqs.length, ok:sOk, overdue:sOverdue, none:sNone});
+  });
+
+  (CLOUD_LOGS||[]).forEach(log=>{
+    const key = logInspector(log);
+    inspectorStats[key] = (inspectorStats[key]||0) + 1;
+  });
+
+  const managed = okEq + overdueEq + noneEq;
+  return {
+    totalEq, okEq, overdueEq, noneEq, nocycleEq, alerts,
+    checkRate: managed>0 ? Math.round(okEq/managed*100) : 0,
+    sitesStats, inspectorStats
+  };
+}
+
+function openDashboard(){
+  if(!requireAdmin()) return;
+  const s = calculateDashboardStats();
+  const th='padding:8px;text-align:left;font-weight:700';
+  const thR='padding:8px;text-align:right;font-weight:700';
+  const td='padding:8px';
+  const tdR='padding:8px;text-align:right;font-weight:600';
+
+  const inspectorRows = Object.entries(s.inspectorStats).sort((a,b)=>b[1]-a[1]);
+
+  const html = `
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:22px">
+      <div style="background:var(--brand-50);padding:16px;border-radius:var(--r-md);text-align:center">
+        <div style="font-size:28px;font-weight:800;color:var(--brand-600)">${s.checkRate}%</div>
+        <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">주기 준수율</div>
+      </div>
+      <div style="background:var(--ok-bg);padding:16px;border-radius:var(--r-md);text-align:center">
+        <div style="font-size:28px;font-weight:800;color:var(--ok-fg)">${s.okEq}</div>
+        <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">주기 내 정상</div>
+      </div>
+      <div style="background:var(--danger-bg);padding:16px;border-radius:var(--r-md);text-align:center">
+        <div style="font-size:28px;font-weight:800;color:var(--danger-fg)">${s.overdueEq}</div>
+        <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">기한 초과</div>
+      </div>
+      <div style="background:var(--warn-bg);padding:16px;border-radius:var(--r-md);text-align:center">
+        <div style="font-size:28px;font-weight:800;color:var(--warn-fg)">${s.noneEq}</div>
+        <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">한 번도 미점검</div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:22px">
+      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">조치 필요 설비 ${s.alerts.length}건</h4>
+      ${s.alerts.length ? `
+      <div style="max-height:220px;overflow-y:auto;border:1px solid var(--surface-line);border-radius:var(--r-sm)">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead><tr style="background:var(--bg-sunken)"><th style="${th}">시설</th><th style="${th}">설비</th><th style="${thR}">상태</th></tr></thead>
+          <tbody>
+            ${s.alerts.map(a=>`<tr style="border-top:1px solid var(--surface-line);cursor:pointer" onclick="closeModal();enterSite('${a.siteId}');openEquipment('${a.key}')">
+              <td style="${td}">${esc(a.site)}</td>
+              <td style="${td}">${esc(a.eq)}</td>
+              <td style="${tdR};color:${a.status==='기한초과'?'var(--danger-fg)':'var(--warn-fg)'}">${a.status}${a.label!=='-'?' '+a.label:''}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : `<p style="font-size:12.5px;color:var(--fg-4);margin:4px 0">조치가 필요한 설비가 없습니다.</p>`}
+    </div>
+
+    <div style="margin-bottom:22px">
+      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">시설별 현황</h4>
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead><tr style="background:var(--bg-sunken)"><th style="${th}">시설명</th><th style="${thR}">정상</th><th style="${thR}">초과</th><th style="${thR}">미점검</th></tr></thead>
+        <tbody>
+          ${s.sitesStats.map(st=>`<tr style="border-top:1px solid var(--surface-line)">
+            <td style="${td}">${esc(st.name)}</td>
+            <td style="${tdR};color:var(--ok-fg)">${st.ok}</td>
+            <td style="${tdR};color:var(--danger-fg)">${st.overdue}</td>
+            <td style="${tdR};color:var(--warn-fg)">${st.none}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div>
+      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">점검자별 기록</h4>
+      ${inspectorRows.length ? `
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead><tr style="background:var(--bg-sunken)"><th style="${th}">점검자</th><th style="${thR}">기록 건수</th></tr></thead>
+        <tbody>
+          ${inspectorRows.map(([name,count])=>`<tr style="border-top:1px solid var(--surface-line)"><td style="${td}">${esc(name)}</td><td style="${tdR}">${count}건</td></tr>`).join('')}
+        </tbody>
+      </table>` : `<p style="font-size:12.5px;color:var(--fg-4);margin:4px 0">아직 기록된 점검이 없습니다.</p>`}
+    </div>`;
+  openModal('관리 대시보드', html,
+    `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>
+     <button class="btn btn--ghost" onclick="generatePeriodReport(7,'주간')">주간 리포트</button>
+     <button class="btn btn--primary" onclick="generatePeriodReport(30,'월간')">월간 리포트</button>`);
+}
+
+/* 기간별 전체 시설 점검 리포트 — days 일 이내의 모든 기록을 엑셀로 */
+function generatePeriodReport(days, label){
+  if(!requireAdmin()) return;
+  if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
+  const cutoff = Date.now() - days*86400000;
+  const rows = [];
+
+  (CLOUD_LOGS||[]).forEach(log=>{
+    /* 예전 기록에는 ts가 없을 수 있어 날짜 문자열로 보정한다 */
+    const t = log.ts || (parseLogDate(log.d)?.getTime()) || 0;
+    if(t < cutoff) return;
+    const site = DB.sites.find(s=>s.id===log.site);
+    const eq = site && site.equipment ? site.equipment[log.eq] : null;
+    rows.push({
+      날짜: log.d||'',
+      시설: site?site.name:'(삭제된 시설)',
+      설비: eq?(eq.short||eq.title):'(삭제된 설비)',
+      구분: log.kind==='check'?'점검완료':'특이사항',
+      내용: log.t||'',
+      상태: toneLabel(log.tone),
+      점검자: logInspector(log)
+    });
+  });
+
+  if(!rows.length) return toast(`최근 ${label} 점검 이력이 없습니다.`,'warn');
+  rows.sort((a,b)=> a.날짜<b.날짜?1:-1);
+
+  const ws=XLSX.utils.json_to_sheet(rows);
+  ws['!cols']=[{wch:18},{wch:18},{wch:22},{wch:10},{wch:46},{wch:8},{wch:12}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, `${label}리포트`);
+  XLSX.writeFile(wb, `GN-FM_${label}점검리포트_${stamp().split(' ')[0]}.xlsx`);
+  toast(`${label} 리포트 ${rows.length}건을 저장했습니다.`);
 }
 
 document.getElementById('themeBtn').addEventListener('click',()=>{
