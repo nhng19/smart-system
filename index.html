@@ -1306,6 +1306,7 @@ html[data-theme="dark"] .moon{display:none}
 }
 .spec__k::before{content:"";width:3px;height:11px;border-radius:2px;background:var(--brand-400);opacity:.8}
 .spec__v{font-size:12.5px;font-weight:600;color:var(--fg-2);line-height:1.55}
+.spec__v small{font-size:10.5px;font-weight:700;color:var(--fg-3);margin-left:3px}
 
 /* ============ Procedure timeline ============ */
 .steps{position:relative;padding-left:2px}
@@ -2497,7 +2498,7 @@ function render(key){
     </div>`).join('');
 
   const specsHtml = d.specs.map(s=>`
-    <div class="spec"><div class="spec__k">${esc(s.label)}</div><div class="spec__v">${esc(s.val)}</div></div>`).join('');
+    <div class="spec"><div class="spec__k">${esc(s.label)}</div><div class="spec__v">${esc(s.val)}${s.unit?`<small>${esc(s.unit)}</small>`:''}</div></div>`).join('');
 
   const stepsHtml = d.instructions.map((t,i)=>`
     <li class="step"><div class="step__n">${i+1}</div><div class="step__t">${esc(t)}</div></li>`).join('');
@@ -3152,8 +3153,8 @@ function openEqEditor(key){
       <span class="hint">한 줄에 하나씩. <b>항목 | 값 | 단위</b> 형식입니다. 주기를 설정하면 주기·차기점검이 자동으로 앞에 표시되므로 직접 넣지 않아도 됩니다.</span></div>
 
     <div class="fld"><label>주요 사양</label>
-      <textarea id="eSpec" placeholder="용량 | 경영풀 185 m³/HR">${esc(j(d&&d.specs,x=>`${x.label} | ${x.val}`))}</textarea>
-      <span class="hint">한 줄에 하나씩. <b>항목 | 내용</b> 형식.</span></div>
+      <textarea id="eSpec" placeholder="탱크용량 | 300 | LIT">${esc(j(d&&d.specs,x=>`${x.label} | ${x.val}${x.unit?' | '+x.unit:''}`))}</textarea>
+      <span class="hint">한 줄에 하나씩. <b>항목 | 값 | 단위</b> 형식입니다. 단위가 없으면 비워 두세요.</span></div>
 
     <div class="fld"><label>영상 매뉴얼 주소</label>
       <input id="eVideo" value="${esc(d&&d.videoUrl&&d.videoUrl!=='#'?d.videoUrl:'')}" placeholder="https://... (없으면 비워두세요)"></div>
@@ -3180,7 +3181,7 @@ function saveEq(key){
   const kpi = lines('eKpi').map(l=>{ const a=l.split('|').map(x=>x.trim());
     return {k:a[0]||'', v:a[1]||'', u:a[2]||''}; }).slice(0,3);
   const specs = lines('eSpec').map(l=>{ const a=l.split('|').map(x=>x.trim());
-    return {label:a[0]||'', val:a.slice(1).join(' | ')||''}; });
+    return {label:a[0]||'', val:a[1]||'', unit:a.slice(2).join(' ').trim()}; });
   const video=val('eVideo');
   let cycleVal = val('eCycle')||'';
   if(cycleVal==='custom'){
@@ -3502,12 +3503,17 @@ function parseCycleText(s){
   return '';
 }
 
-/* "설계압: 5kg/cm²" 처럼 콜론으로 나뉜 줄들을 항목/값 쌍으로 */
+/* 한 줄을 항목/값/단위로 나눈다.
+   "탱크용량 | 300 | LIT" (파이프, 단위 분리)  또는  "설계압: 5kg/cm²" (콜론) 둘 다 받는다. */
 function splitLabeledLines(s){
   return String(s||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{
+    if(line.includes('|')){
+      const a = line.split('|').map(x=>x.trim());
+      return {label:a[0]||'', val:a[1]||'', unit:a.slice(2).join(' ').trim()};
+    }
     const i = line.indexOf(':');
-    return i>0 ? {label:line.slice(0,i).trim(), val:line.slice(i+1).trim()}
-               : {label:line, val:''};
+    return i>0 ? {label:line.slice(0,i).trim(), val:line.slice(i+1).trim(), unit:''}
+               : {label:line, val:'', unit:''};
   });
 }
 const plainLines = s => String(s||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
@@ -3577,7 +3583,7 @@ function parseSurveyWorkbook(wb){
     const statusText = String(r[5]||'').trim() || '정상 가동';
     const mgmtNo = String(r[2]||'').trim();
     const specs = splitLabeledLines(r[7]);
-    if(mgmtNo) specs.unshift({label:'관리번호', val:mgmtNo});
+    if(mgmtNo) specs.unshift({label:'관리번호', val:mgmtNo, unit:''});
 
     const key = site || '(사업체명 없음)';
     (groups[key] = groups[key] || []).push({
@@ -3586,7 +3592,7 @@ function parseSurveyWorkbook(wb){
       cycle: parseCycleText(r[4]),
       cycleText: String(r[4]||'').trim(),
       status:{label:statusText, tone:/정상|양호|가동/.test(statusText)?'ok':'warn'},
-      kpi: splitLabeledLines(r[6]).slice(0,3).map(x=>({k:x.label, v:x.val, u:''})),
+      kpi: splitLabeledLines(r[6]).slice(0,3).map(x=>({k:x.label, v:x.val, u:x.unit||''})),
       specs,
       videoUrl:'#',
       instructions: plainLines(r[8]),
