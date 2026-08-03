@@ -1581,7 +1581,10 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
   border:1px solid color-mix(in srgb,var(--brand-500) 15%,transparent)}
 .tile__ico svg{width:23px;height:23px}
 .tile__b{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-.tile__n{font-size:15.5px;font-weight:800;letter-spacing:-.02em;color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 설비명은 "진공온수보일러(난방·급탕)"처럼 괄호로 구별되는 경우가 많아,
+   한 줄로 자르면 정작 구별되는 부분이 사라진다. 2줄까지 보여준다. */
+.tile__n{font-size:15.5px;font-weight:800;letter-spacing:-.02em;color:var(--fg);line-height:1.3;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
 .tile__s{font-size:12.5px;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tile__tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
 .tile__chev{color:var(--fg-4);font-size:21px;flex:none;margin-left:4px}
@@ -2291,7 +2294,7 @@ function showRoom(){
     return `<div class="tile" onclick="enterSite('${st.id}')">
       <span class="tile__ico">${svg(ROOM_ICON)}</span>
       <span class="tile__b">
-        <span class="tile__n">${esc(st.name)}</span>
+        <span class="tile__n" title="${esc(st.name)}">${esc(st.name)}</span>
         <span class="tile__s">${esc(st.sub||'')}</span>
         <span class="tile__tags"><span class="badge badge--info">설비 ${n}종</span></span>
       </span>
@@ -2365,7 +2368,7 @@ function enterSite(id){
     return `<div class="tile" onclick="openEquipment('${k}')">
       <span class="tile__ico">${svg(iconPath(d.icon))}</span>
       <span class="tile__b">
-        <span class="tile__n">${esc(d.short||d.title)}</span>
+        <span class="tile__n" title="${esc(d.title||d.short)}">${esc(d.short||d.title)}</span>
         <span class="tile__tags">
           <span class="badge badge--${tone==='ok'?'ok':'warn'}">${esc((d.status&&d.status.label)||'상태 미지정')}</span>
           ${(()=>{const u=dueInfo(d); return u
