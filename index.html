@@ -1337,7 +1337,7 @@ html[data-theme="dark"] .step__n{color:var(--brand-300)}
 .alert::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--warn-fg);opacity:.75}
 .alert svg{width:20px;height:20px;color:var(--warn-fg);margin-top:1px}
 .alert__t{font-size:11px;font-weight:800;color:var(--warn-fg);letter-spacing:.02em;margin-bottom:3px;text-transform:uppercase}
-.alert__d{font-size:12.5px;line-height:1.65;color:var(--warn-fg);opacity:.92;font-weight:500}
+.alert__d{font-size:12.5px;line-height:1.65;color:var(--warn-fg);opacity:.92;font-weight:500;white-space:pre-line}
 
 /* ============ Checklist ============ */
 .progressrow{display:flex;align-items:center;gap:14px;padding:2px 0 14px}
@@ -2390,6 +2390,7 @@ function enterSite(id){
       <span style="font-size:12px;color:var(--fg-3);font-weight:600">설비 목록</span>
       <span style="display:flex;gap:6px;flex:none">
         ${isAdmin?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openDashboard('${id}')" title="이 시설의 점검 현황 요약">현황</button>`:''}
+        ${canEditSite(id)?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openEqImport()" title="설비현황 조사표(엑셀)를 읽어 설비를 한 번에 등록">엑셀 등록</button>`:''}
         <button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="exportSiteLogs()" title="이 시설의 모든 설비 점검 이력을 엑셀로 저장">↓ 저장</button>
       </span>
     </div>
@@ -2491,21 +2492,21 @@ function render(key){
   _kpi = _kpi.slice(0,3);
   const kpiHtml = _kpi.map(x=>`
     <div class="stat">
-      <div class="stat__k">${x.k}</div>
-      <div class="stat__v ${x.tone?'is-'+x.tone:''}">${x.v}${x.u?`<small>${x.u}</small>`:''}</div>
+      <div class="stat__k">${esc(x.k)}</div>
+      <div class="stat__v ${x.tone?'is-'+x.tone:''}">${esc(x.v)}${x.u?`<small>${esc(x.u)}</small>`:''}</div>
     </div>`).join('');
 
   const specsHtml = d.specs.map(s=>`
-    <div class="spec"><div class="spec__k">${s.label}</div><div class="spec__v">${s.val}</div></div>`).join('');
+    <div class="spec"><div class="spec__k">${esc(s.label)}</div><div class="spec__v">${esc(s.val)}</div></div>`).join('');
 
   const stepsHtml = d.instructions.map((t,i)=>`
-    <li class="step"><div class="step__n">${i+1}</div><div class="step__t">${t}</div></li>`).join('');
+    <li class="step"><div class="step__n">${i+1}</div><div class="step__t">${esc(t)}</div></li>`).join('');
 
   const checksHtml = d.checklist.map((t,i)=>`
     <label class="check">
       <input type="checkbox" data-check onchange="updateProgress()">
       <span class="check__box">${svg(I.check)}</span>
-      <span class="check__t">${t}</span>
+      <span class="check__t">${esc(t)}</span>
     </label>`).join('');
 
   const hasVideo = d.videoUrl && d.videoUrl !== '#';
@@ -2567,7 +2568,7 @@ function render(key){
           ${svg(I.alert)}
           <div>
             <div class="alert__t">주의 · 고장 조치</div>
-            <div class="alert__d">${d.troubleShooting}</div>
+            <div class="alert__d">${esc(d.troubleShooting)}</div>
           </div>
         </div>
       </div>
@@ -3477,6 +3478,191 @@ function openDashboard(siteId){
     `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>
      <button class="btn btn--ghost" onclick="generatePeriodReport(7,'주간'${arg})">주간 리포트</button>
      <button class="btn btn--primary" onclick="generatePeriodReport(30,'월간'${arg})">월간 리포트</button>`);
+}
+
+/* ============================================================
+   설비현황 조사표(엑셀) 일괄 등록
+   사업장이 작성해 보낸 조사표를 그대로 읽어 설비로 넣는다.
+   열 순서: 사업체명 | 설비이름 | 관리번호 | 종류 | 주기 | 상태 |
+            핵심수치 | 사양 | 유지관리 | 고장대처 | 점검표
+   ============================================================ */
+let _importGroups = null;
+
+/* "14일", "매일", "1개월" 같은 자유 입력을 앱의 cycle 값으로 바꾼다 */
+function parseCycleText(s){
+  const t = String(s||'').replace(/\s/g,'');
+  if(!t) return '';
+  if(/매일|1일|일1회/.test(t)) return 'daily';
+  if(/^7일$|주1회|매주/.test(t)) return 'd7';
+  if(/^14일$|2주/.test(t)) return 'd14';
+  if(/한달|1개월|매월|월1회/.test(t)) return 'month';
+  let m=/(\d+)개월/.exec(t); if(m) return +m[1]===1 ? 'month' : ('custom:'+(+m[1]*30));
+  m=/(\d+)일/.exec(t);       if(m) return +m[1]>0 ? ('custom:'+ +m[1]) : '';
+  m=/(\d+)주/.exec(t);       if(m) return +m[1]>0 ? ('custom:'+(+m[1]*7)) : '';
+  return '';
+}
+
+/* "설계압: 5kg/cm²" 처럼 콜론으로 나뉜 줄들을 항목/값 쌍으로 */
+function splitLabeledLines(s){
+  return String(s||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean).map(line=>{
+    const i = line.indexOf(':');
+    return i>0 ? {label:line.slice(0,i).trim(), val:line.slice(i+1).trim()}
+               : {label:line, val:''};
+  });
+}
+const plainLines = s => String(s||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+
+/* 분류·이름을 보고 어울리는 아이콘을 고른다 (없으면 기본 톱니) */
+function guessIcon(cat, name){
+  const t = (cat+' '+name);
+  if(/여과|필터|집모기|헤어/.test(t)) return 'filter';
+  if(/전기|살균|오존|자외선|UV/.test(t)) return 'zap';
+  if(/보일러|급탕|온수|열교환|난방/.test(t)) return 'flame';
+  if(/공조|냉방|냉동|제습|덕트/.test(t)) return 'layers';
+  if(/계측|압력|수질|센서|측정/.test(t)) return 'spec';
+  return 'gear';
+}
+
+function openEqImport(){
+  if(!requireSiteAdmin(currentSite)) return;
+  if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
+  let inp = document.getElementById('eqImportFile');
+  if(!inp){
+    inp = document.createElement('input');
+    inp.type='file'; inp.id='eqImportFile'; inp.accept='.xlsx,.xls'; inp.hidden=true;
+    inp.addEventListener('change', e=>{
+      const f = e.target.files && e.target.files[0];
+      e.target.value='';               /* 같은 파일을 다시 골라도 동작하도록 */
+      if(f) readSurveyFile(f);
+    });
+    document.body.appendChild(inp);
+  }
+  inp.click();
+}
+
+function readSurveyFile(file){
+  const fr = new FileReader();
+  fr.onerror = ()=> toast('파일을 읽지 못했습니다.','warn');
+  fr.onload = ev=>{
+    let wb;
+    try{ wb = XLSX.read(new Uint8Array(ev.target.result), {type:'array'}); }
+    catch(err){ console.warn(err); return toast('엑셀 파일을 여는 데 실패했습니다.','warn'); }
+    const groups = parseSurveyWorkbook(wb);
+    if(!groups) return;
+    _importGroups = groups;
+    renderImportPreview();
+  };
+  fr.readAsArrayBuffer(file);
+}
+
+function parseSurveyWorkbook(wb){
+  const name = wb.SheetNames.find(n=>/설비/.test(n)) || wb.SheetNames[1] || wb.SheetNames[0];
+  const ws = wb.Sheets[name];
+  if(!ws){ toast('시트를 찾지 못했습니다.','warn'); return null; }
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, blankrows:false, defval:''});
+
+  /* 머리글 줄을 찾아 그 다음부터 데이터로 본다 */
+  let head = rows.findIndex(r => r.some(c=>/설비\s*이름/.test(String(c))));
+  if(head<0) head = 0;
+
+  const groups = {};
+  for(let i=head+1; i<rows.length; i++){
+    const r = rows[i];
+    const site = String(r[0]||'').trim();
+    const title = String(r[1]||'').trim();
+    if(!title) continue;
+    if(/^EX\)/i.test(site)) continue;          /* 조사표에 들어있는 예시 줄 */
+
+    const cat = String(r[3]||'').trim() || '설비';
+    const statusText = String(r[5]||'').trim() || '정상 가동';
+    const mgmtNo = String(r[2]||'').trim();
+    const specs = splitLabeledLines(r[7]);
+    if(mgmtNo) specs.unshift({label:'관리번호', val:mgmtNo});
+
+    const key = site || '(사업체명 없음)';
+    (groups[key] = groups[key] || []).push({
+      title, short:title, category:cat,
+      icon: guessIcon(cat, title),
+      cycle: parseCycleText(r[4]),
+      cycleText: String(r[4]||'').trim(),
+      status:{label:statusText, tone:/정상|양호|가동/.test(statusText)?'ok':'warn'},
+      kpi: splitLabeledLines(r[6]).slice(0,3).map(x=>({k:x.label, v:x.val, u:''})),
+      specs,
+      videoUrl:'#',
+      instructions: plainLines(r[8]),
+      troubleShooting: plainLines(r[9]).join('\n') || '특이사항 없음',
+      checklist: plainLines(r[10]),
+      logs: []
+    });
+  }
+
+  if(!Object.keys(groups).length){
+    toast('등록할 설비를 찾지 못했습니다. 조사표 양식이 맞는지 확인해 주세요.','warn',4500);
+    return null;
+  }
+  return groups;
+}
+
+function renderImportPreview(){
+  const st = getSite(currentSite);
+  const existing = new Set(Object.values(st.equipment||{}).map(d=>(d.title||'').trim()));
+  const names = Object.keys(_importGroups);
+
+  const blocks = names.map(g=>{
+    const list = _importGroups[g];
+    const dup = list.filter(d=>existing.has(d.title)).length;
+    const add = list.length - dup;
+    const noCycle = list.filter(d=>!d.cycle && d.cycleText).length;
+    return `<div style="border:1px solid var(--surface-line);border-radius:var(--r-sm);padding:12px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <b style="flex:1;font-size:13.5px">${esc(g)}</b>
+        <span class="badge badge--info">${list.length}건</span>
+      </div>
+      <div style="font-size:12px;color:var(--fg-3);line-height:1.8">
+        새로 등록 <b style="color:var(--ok-fg)">${add}건</b>
+        ${dup?` · 이름이 같아 건너뜀 <b style="color:var(--warn-fg)">${dup}건</b>`:''}
+        ${noCycle?`<br>주기를 알아보지 못한 설비 ${noCycle}건 — 등록 후 개별 설정이 필요합니다.`:''}
+      </div>
+      <div style="margin-top:8px;max-height:110px;overflow-y:auto;font-size:11.5px;color:var(--fg-4);line-height:1.7">
+        ${list.slice(0,40).map(d=>`${existing.has(d.title)?'· <s>':'· '}${esc(d.title)}${existing.has(d.title)?'</s>':''}`).join('<br>')}
+        ${list.length>40?`<br>… 외 ${list.length-40}건`:''}
+      </div>
+      ${add?`<button class="btn btn--primary" style="margin-top:10px" onclick="commitEqImport('${esc(g).replace(/'/g,"\\'")}')">이 ${add}건을 «${esc(st.name)}»에 등록</button>`
+           :`<p style="margin:10px 0 0;font-size:12px;color:var(--fg-4)">모두 이미 등록되어 있습니다.</p>`}
+    </div>`;
+  }).join('');
+
+  openModal('엑셀에서 설비 등록', `
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--fg-3);line-height:1.7">
+      현재 시설: <b style="color:var(--fg)">${esc(st.name)}</b><br>
+      아래에서 등록할 묶음을 고르세요. <b>이름이 같은 설비는 자동으로 건너뜁니다.</b>
+    </p>${blocks}`,
+    `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>`);
+}
+
+function commitEqImport(groupName){
+  if(!requireSiteAdmin(currentSite)) return;
+  const list = _importGroups && _importGroups[groupName];
+  if(!list) return toast('등록할 목록을 찾지 못했습니다.','warn');
+  const st = getSite(currentSite); if(!st) return;
+
+  const existing = new Set(Object.values(st.equipment||{}).map(d=>(d.title||'').trim()));
+  let added=0;
+  list.forEach(d=>{
+    if(existing.has(d.title)) return;
+    const obj = Object.assign({}, d);
+    delete obj.cycleText;
+    obj.logs = [{t:'설비 등록 (엑셀 일괄)', d:stamp(), tone:'ok'}];
+    st.equipment[uid('eq')] = obj;
+    existing.add(d.title);
+    added++;
+  });
+
+  if(!added){ closeModal(); return toast('새로 등록할 설비가 없습니다.','warn'); }
+  equipmentData = st.equipment;
+  saveDB(); pushSite(currentSite); closeModal();
+  enterSite(currentSite);
+  toast(`설비 ${added}건을 등록했습니다.`,'ok',4000);
 }
 
 /* 기간별 점검 리포트 — days 일 이내의 기록을 엑셀로. siteId를 주면 그 시설만 */
