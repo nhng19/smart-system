@@ -2325,9 +2325,11 @@ function refreshInspectorLabel(){
   if(el) el.textContent = inspectorName() || '미등록';
 }
 
-/* 점검 제출 전에 반드시 통과해야 하는 관문 */
+/* 점검 제출 전에 반드시 통과해야 하는 관문.
+   이미 등록돼 있으면 true만 돌려주고 호출부가 그대로 진행한다.
+   (여기서 onOk를 부르면 호출부가 자기 자신을 다시 불러 무한 재귀가 된다) */
 function requireInspector(onOk){
-  if(myInspector){ onOk(); return true; }
+  if(myInspector) return true;
   askInspectorCode(onOk);
   return false;
 }
@@ -2403,6 +2405,18 @@ function randomCode(name){
   return initials + Math.floor(1000 + Math.random()*9000);
 }
 
+/* 내가 점검자를 지정할 수 있는 시설 목록 */
+function manageableSites(){
+  if(isSuper()) return DB.sites.slice();
+  return DB.sites.filter(st=>(mySites||[]).includes(st.id));
+}
+/* 이 코드를 내가 관리할 수 있나 — 코드의 담당 시설이 모두 내 담당이어야 한다 */
+function canManageCode(c){
+  if(isSuper()) return true;
+  const s = Array.isArray(c.sites) ? c.sites : [];
+  return s.length > 0 && s.every(id=>(mySites||[]).includes(id));
+}
+
 function openInspectorCodes(){
   if(!requireAdmin()) return;
   if(!cloudOn) return toast('네트워크에 연결된 상태에서만 관리할 수 있습니다.','warn');
@@ -2410,11 +2424,16 @@ function openInspectorCodes(){
     FB.getDocs(FB.collection(FB.db,'gnfm_codes')),
     FB.getDocs(FB.collection(FB.db,'gnfm_devices'))
   ]).then(([cs,ds])=>{
-    const codes = cs.docs.map(d=>Object.assign({code:d.id}, d.data()));
+    const codes = cs.docs.map(d=>Object.assign({code:d.id}, d.data())).filter(canManageCode);
     const used  = {};
     ds.docs.forEach(d=>{ const c=(d.data()||{}).code; if(c) used[c]=(used[c]||0)+1; });
     renderInspectorCodes(codes, used);
   }).catch(e=>{ console.warn(e); toast('목록을 불러오지 못했습니다.','warn'); });
+}
+
+function siteNamesOf(ids){
+  if(!Array.isArray(ids) || !ids.length) return '모든 시설';
+  return ids.map(id=>{ const s=getSite(id); return s?s.name:id; }).join(', ');
 }
 
 function renderInspectorCodes(codes, used){
@@ -2427,22 +2446,40 @@ function renderInspectorCodes(codes, used){
           <code style="font-family:var(--mono);font-weight:800;letter-spacing:.1em;color:var(--brand-600)">${esc(c.code)}</code>
           · 등록 기기 ${used[c.code]||0}대
         </span>
+        <span style="display:block;font-size:11.5px;color:var(--fg-4);overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="${esc(siteNamesOf(c.sites))}">${esc(siteNamesOf(c.sites))}</span>
       </span>
       <button class="btn btn--ghost" style="width:auto;flex:none;padding:6px 10px;font-size:11px" onclick="copyInspectorCode('${esc(c.code)}')">복사</button>
       <button class="btn btn--danger" style="width:auto;flex:none;padding:6px 10px;font-size:11px" onclick="deleteInspectorCode('${esc(c.code)}')">삭제</button>
     </div>`).join('');
 
+  const targets = manageableSites();
+  const siteChecks = targets.map(st=>`
+    <label style="display:flex;align-items:center;gap:7px;font-size:13px;padding:5px 4px;border-radius:8px;cursor:pointer" title="${esc(st.name)}">
+      <input type="checkbox" class="icSite" value="${st.id}" style="flex:none;width:15px;height:15px">
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(st.name)}</span>
+    </label>`).join('');
+
   openModal('점검자 코드 관리', `
     <p style="margin:0 0 12px;font-size:12.5px;color:var(--fg-3);line-height:1.7">
       코드를 받은 사람만 점검 결과를 제출할 수 있습니다.<br>
       점검자는 <b style="color:var(--fg)">처음 한 번만</b> 코드를 입력하면 그 휴대폰에 저장됩니다.
+      ${isSuper()?'':'<br>내가 담당하는 시설의 점검자만 보이고, 관리할 수 있습니다.'}
     </p>
-    <div style="max-height:260px;overflow:auto;margin-bottom:14px">
+    <div style="max-height:240px;overflow:auto;margin-bottom:14px">
       ${rows || '<p style="font-size:12.5px;color:var(--fg-4);margin:6px 0">발급된 코드가 없습니다.</p>'}
     </div>
-    <div class="fld"><label>점검자 추가</label>
+    <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px"><label>점검자 추가</label>
       <input id="newInspName" type="text" placeholder="이름 (예: 김남형)" maxlength="20">
-      <span class="hint">코드는 자동으로 만들어집니다.</span></div>`,
+      <span class="hint">코드는 자동으로 만들어집니다.</span></div>
+    <div class="fld"><label>점검 가능 시설</label>
+      ${targets.length
+        ? `<div style="max-height:150px;overflow:auto;border:1px solid var(--surface-line);border-radius:var(--r-sm);padding:6px">${siteChecks}</div>
+           <span class="hint">${isSuper()
+             ? '하나도 선택하지 않으면 <b>모든 시설</b>에서 점검할 수 있습니다.'
+             : '한 곳 이상 선택해 주세요.'}</span>`
+        : '<span class="hint">담당 시설이 지정되어 있지 않습니다. 전체 관리자에게 문의하세요.</span>'}
+    </div>`,
     `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>
      <button class="btn btn--primary" onclick="addInspectorCode()">추가</button>`);
 }
@@ -2451,10 +2488,13 @@ function addInspectorCode(){
   if(!requireAdmin()) return;
   const name = val('newInspName').trim();
   if(!name) return toast('이름을 입력해 주세요.','warn');
+  const sites = [...document.querySelectorAll('.icSite:checked')].map(x=>x.value);
+  if(!isSuper() && !sites.length) return toast('점검 가능 시설을 한 곳 이상 선택해 주세요.','warn');
+
   const code = randomCode(name);
-  FB.setDoc(FB.doc(FB.db,'gnfm_codes',code), {name, createdAt:Date.now()})
-    .then(()=>{ toast(`${name} 님 코드: ${code}`,'ok',6000); openInspectorCodes(); })
-    .catch(e=>{ console.warn(e); toast('추가에 실패했습니다.','warn'); });
+  FB.setDoc(FB.doc(FB.db,'gnfm_codes',code), {name, sites, createdAt:Date.now()})
+    .then(()=>{ toast(`${name} 님 코드: ${code} (${siteNamesOf(sites)})`,'ok',7000); openInspectorCodes(); })
+    .catch(e=>{ console.warn(e); toast('추가에 실패했습니다. 담당 시설 범위를 확인해 주세요.','warn',4000); });
 }
 
 function copyInspectorCode(code){
