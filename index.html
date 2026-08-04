@@ -1553,14 +1553,20 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
   .print-label{display:block !important}
   .card,.hero{display:none !important}
 }
-.print-label{display:none;padding:18mm 14mm;font-family:var(--font);color:#000}
-.print-label .pl-box{border:2.5px solid #000;border-radius:6mm;padding:10mm;text-align:center;max-width:120mm;margin:0 auto}
-.print-label .pl-org{font-size:11pt;font-weight:800;letter-spacing:.06em}
-.print-label .pl-name{font-size:19pt;font-weight:800;margin:4mm 0 1mm;letter-spacing:-.02em}
-.print-label .pl-cat{font-size:10pt;font-weight:600;color:#444}
-.print-label .pl-qr{margin:7mm auto 5mm;display:flex;justify-content:center}
-.print-label .pl-id{font-family:var(--mono);font-size:9pt;font-weight:700;letter-spacing:.08em}
-.print-label .pl-guide{font-size:9pt;margin-top:4mm;padding-top:4mm;border-top:1px dashed #999;color:#333;line-height:1.6}
+/* 라벨은 기존보다 40% 작게 잡고, A4 한 장에 여러 장이 들어가도록 격자로 배치한다.
+   잘라 쓰기 쉽도록 칸마다 점선 테두리를 준다. */
+@page{ size:A4; margin:10mm; }
+.print-label{display:none;font-family:var(--font);color:#000}
+.print-label .pl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(58mm,1fr));gap:3mm}
+.print-label .pl-box{border:1.5px dashed #666;border-radius:3mm;padding:5mm 4mm;text-align:center;break-inside:avoid;page-break-inside:avoid}
+.print-label .pl-org{font-size:7pt;font-weight:800;letter-spacing:.06em}
+.print-label .pl-site{font-size:7pt;font-weight:700;color:#555;margin-top:.5mm}
+.print-label .pl-name{font-size:11.5pt;font-weight:800;margin:2mm 0 .5mm;letter-spacing:-.02em;line-height:1.25;word-break:break-all}
+.print-label .pl-cat{font-size:6pt;font-weight:600;color:#444}
+.print-label .pl-qr{margin:3mm auto 2mm;display:flex;justify-content:center}
+.print-label .pl-qr svg{width:32mm;height:32mm;display:block}
+.print-label .pl-id{font-family:var(--mono);font-size:5.5pt;font-weight:700;letter-spacing:.08em}
+.print-label .pl-guide{font-size:5.5pt;margin-top:2mm;padding-top:2mm;border-top:1px dashed #999;color:#333;line-height:1.5}
 
 /* ============================================================
    계층 구조 (시설 목록 → 시설 → 설비) + 편집기
@@ -1778,15 +1784,9 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
   <span>GN-FM v2.0 · 최종 동기화 <span id="syncAt" style="font-family:var(--mono)"></span></span>
 </footer>
 
-<!-- 인쇄 전용 라벨 -->
+<!-- 인쇄 전용 라벨 (JS가 pl-grid 안에 라벨 칸을 채운다) -->
 <div class="print-label" id="printLabel">
-  <div class="pl-box">
-    <div class="pl-org">스마트 시설관리</div>
-    <div class="pl-name" id="plName"></div>
-    <div class="pl-cat" id="plCat"></div>
-    <div class="pl-qr" id="plQr"></div>
-    <div class="pl-guide">휴대폰 카메라로 QR을 스캔하면 조작 절차·점검표가 열립니다.</div>
-  </div>
+  <div class="pl-grid" id="plGrid"></div>
 </div>
 
 <script type="module">
@@ -2048,11 +2048,11 @@ addEventListener('popstate', ()=>{
 });
 /* 샌드박스에서는 브라우저 confirm()이 무조건 취소로 처리되므로 자체 확인창을 쓴다 */
 let _confirmCb=null;
-function askConfirm(msg, onYes){
+function askConfirm(msg, onYes, okLabel){
   _confirmCb=onYes;
   openModal('확인', `<p style="margin:0;font-size:14px;line-height:1.7;color:var(--fg-2)">${esc(msg)}</p>`,
     `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
-     <button class="btn btn--danger" onclick="confirmYes()">삭제</button>`);
+     <button class="btn btn--danger" onclick="confirmYes()">${esc(okLabel||'삭제')}</button>`);
 }
 function confirmYes(){ const cb=_confirmCb; _confirmCb=null; closeModal(); if(cb) cb(); }
 /* 아이콘 값이 키('filter')든 SVG 경로든 모두 처리 */
@@ -2655,6 +2655,7 @@ function enterSite(id){
       <span style="display:flex;gap:6px;flex:none">
         ${isAdmin?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openDashboard('${id}')" title="이 시설의 점검 현황 요약">현황</button>`:''}
         ${canEditSite(id)?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openEqImport()" title="설비현황 조사표(엑셀)를 읽어 설비를 한 번에 등록">엑셀 등록</button>`:''}
+        ${keys.length?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="printSiteLabels()" title="이 시설 설비 라벨을 한 번에 인쇄 (한 장에 여러 개)">라벨 인쇄</button>`:''}
         <button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="exportSiteLogs()" title="이 시설의 모든 설비 점검 이력을 엑셀로 저장">↓ 저장</button>
       </span>
     </div>
@@ -3023,6 +3024,9 @@ function openAdminUsers(editEmail){
 }
 function renderAdminUsersModal(users, editEmail, founderEmail){
   const editing = editEmail ? users.find(u=>u.email===editEmail) : null;
+  /* 저장할 때 "이메일이 바뀌었는지" 판단하려고 원래 값을 들고 있는다 */
+  window.__auEditing = editing ? editing.email.toLowerCase() : null;
+  window.__auFounder = founderEmail || null;
   const rows = users.map(u=>{
     const roleLabel = u.role==='super' ? '전체 관리자' : '사업장 관리자';
     const siteNames = u.role==='super' ? '모든 시설' : ((u.sites||[]).map(id=>{const s=getSite(id);return s?s.name:id;}).join(', ')||'담당 시설 없음');
@@ -3046,8 +3050,9 @@ function renderAdminUsersModal(users, editEmail, founderEmail){
     <div style="max-height:220px;overflow:auto;margin-bottom:10px">${rows}</div>
     <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:12px">
       <label>${editing?'권한 수정':'관리자 추가'}</label>
-      <input id="auEmail" type="email" value="${esc(editing?editing.email:'')}" ${editing?'disabled':''} placeholder="admin@example.com">
-      <span class="hint">Firebase 콘솔에서 이메일/비밀번호 계정을 먼저 만든 뒤, 같은 이메일로 여기서 권한을 부여하세요.</span></div>
+      <input id="auEmail" type="email" value="${esc(editing?editing.email:'')}" placeholder="admin@example.com">
+      <span class="hint">Firebase 콘솔에서 이메일/비밀번호 계정을 먼저 만든 뒤, 같은 이메일로 여기서 권한을 부여하세요.${
+        editing?'<br>이메일을 바꾸면 <b>이전 계정의 권한은 사라지고</b> 새 이메일로 옮겨집니다.':''}</span></div>
     <div class="fld"><label>역할</label>
       <select id="auRole" onchange="document.getElementById('auSites').hidden=(this.value==='super')">
         <option value="site" ${!editing||editing.role!=='super'?'selected':''}>사업장 관리자 (담당 시설만 수정)</option>
@@ -3068,9 +3073,28 @@ function saveAdminUser(){
   const role=(document.getElementById('auRole')||{}).value||'site';
   const sites=Array.from(document.querySelectorAll('.auSite:checked')).map(x=>x.value);
   if(role==='site' && !sites.length) return toast('담당 시설을 하나 이상 선택해 주세요.','warn');
-  FB.setDoc(FB.doc(FB.db,'gnfm_users',email), {role, sites:role==='super'?[]:sites, updatedAt:Date.now()})
-    .then(()=>{ toast('관리자 권한을 저장했습니다.'); openAdminUsers(); })
-    .catch(e=>{ console.warn(e); toast('저장에 실패했습니다.','warn'); });
+
+  const wasEmail = window.__auEditing;              // 편집 중이던 원래 이메일
+  const renaming = wasEmail && wasEmail !== email;  // 이메일을 바꾼 경우
+  if(renaming && window.__auFounder && wasEmail === window.__auFounder){
+    return toast('최초 관리자의 이메일은 바꿀 수 없습니다. 다른 계정을 추가한 뒤 사용하세요.','warn',5000);
+  }
+
+  const write = ()=> FB.setDoc(FB.doc(FB.db,'gnfm_users',email),
+    {role, sites:role==='super'?[]:sites, updatedAt:Date.now()});
+
+  const done = ()=>{ toast(renaming?`권한을 ${email} 로 옮겼습니다.`:'관리자 권한을 저장했습니다.'); openAdminUsers(); };
+
+  if(!renaming){
+    write().then(done).catch(e=>{ console.warn(e); toast('저장에 실패했습니다.','warn'); });
+    return;
+  }
+  askConfirm(`관리자 권한을 "${wasEmail}" 에서 "${email}" 로 옮길까요? 이전 이메일은 더 이상 관리자가 아니게 됩니다.`, ()=>{
+    write()
+      .then(()=>FB.deleteDoc(FB.doc(FB.db,'gnfm_users',wasEmail)))
+      .then(done)
+      .catch(e=>{ console.warn(e); toast('옮기는 데 실패했습니다.','warn'); });
+  }, '옮기기');
 }
 function deleteAdminUser(email){
   FB.getDoc(FB.doc(FB.db,'gnfm_meta','bootstrap')).then(bs=>{
@@ -3503,12 +3527,13 @@ addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
 /* ============================================================
    QR
    ============================================================ */
-function targetUrl(){
-  const q = `?site=${currentSite}&eq=${currentKey}`;
+function urlFor(siteId, eqKey){
+  const q = `?site=${siteId}&eq=${eqKey}`;
   if(BASE_URL) return BASE_URL + q;
   if(/^https?:$/i.test(location.protocol)) return `${location.origin}${location.pathname}${q}`;
   return q;  /* file:// 또는 미리보기 등 스캔 불가 환경 */
 }
+function targetUrl(){ return urlFor(currentSite, currentKey); }
 function qrScannable(){ return !!BASE_URL || /^https?:$/i.test(location.protocol); }
 function generateQRCode(){
   const el=document.getElementById('qrcode');
@@ -3524,13 +3549,47 @@ function copyLink(){
     .then(()=>toast('설비 링크를 복사했습니다.'))
     .catch(()=>toast('복사에 실패했습니다.','warn'));
 }
+/* 라벨 칸 하나를 만든다. QR은 SVG로 그려지고 크기는 CSS(32mm)가 정한다. */
+function buildLabelCell(siteName, d, url){
+  const box = document.createElement('div');
+  box.className = 'pl-box';
+  box.innerHTML =
+    `<div class="pl-org">스마트 시설관리</div>` +
+    `<div class="pl-site">${esc(siteName)}</div>` +
+    `<div class="pl-name">${esc(d.short||d.title)}</div>` +
+    `<div class="pl-cat">${esc(d.category||'')}</div>` +
+    `<div class="pl-qr"></div>` +
+    `<div class="pl-guide">휴대폰 카메라로 스캔 → 절차·점검표</div>`;
+  new QRCode(box.querySelector('.pl-qr'),
+    {text:url, width:220, height:220, colorDark:'#000000', colorLight:'#FFFFFF', correctLevel:QRCode.CorrectLevel.H});
+  return box;
+}
+
+function renderLabels(cells){
+  const grid = document.getElementById('plGrid');
+  grid.innerHTML = '';
+  cells.forEach(c=>grid.appendChild(c));
+  setTimeout(()=>window.print(), 300);
+}
+
+/* 지금 보고 있는 설비 한 장 */
 function printLabel(){
-  const d=equipmentData[currentKey];
-  document.getElementById('plName').textContent=d.title;
-  document.getElementById('plCat').textContent=d.category;
-  const q=document.getElementById('plQr'); q.innerHTML='';
-  new QRCode(q,{text:targetUrl(),width:200,height:200,colorDark:'#000000',colorLight:'#FFFFFF',correctLevel:QRCode.CorrectLevel.H});
-  setTimeout(()=>window.print(),260);
+  const d = equipmentData[currentKey]; if(!d) return;
+  const st = getSite(currentSite);
+  renderLabels([ buildLabelCell(st?st.name:'', d, targetUrl()) ]);
+}
+
+/* 이 시설의 모든 설비 라벨을 한 번에 — A4 한 장에 여러 개씩 */
+function printSiteLabels(){
+  const st = getSite(currentSite); if(!st) return;
+  const entries = Object.entries(st.equipment||{});
+  if(!entries.length) return toast('인쇄할 설비가 없습니다.','warn');
+  if(!qrScannable()){
+    toast('공개 웹 주소가 등록되지 않아 스캔되지 않는 QR이 인쇄됩니다. 설정에서 주소를 먼저 등록하세요.','warn',5000);
+  }
+  const cells = entries.map(([k,d])=>buildLabelCell(st.name, d, urlFor(st.id, k)));
+  toast(`라벨 ${cells.length}장을 인쇄합니다.`);
+  renderLabels(cells);
 }
 
 /* ============================================================
