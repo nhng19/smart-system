@@ -1811,7 +1811,8 @@ try{
     signIn: au.signInWithEmailAndPassword,
     signOutFn: au.signOut,
     onAuth: au.onAuthStateChanged,
-    updatePw: au.updatePassword };
+    updatePw: au.updatePassword,
+    signInAnon: au.signInAnonymously };
   window.dispatchEvent(new Event("fb-ready"));
 }catch(e){
   console.warn("Firestore 연결 실패 — 기기 저장으로 동작합니다.", e);
@@ -2200,7 +2201,8 @@ function migrateOldMaster(){
 /* 로그인한 이메일의 권한을 서버에서 조회. 등록된 관리자가 하나도 없으면
    지금 로그인한 계정을 최초 전체 관리자로 자동 등록한다(최초 세팅용). */
 function resolveRole(user){
-  if(!user){ myRole=null; mySites=[]; isAdmin=false; closeModal(); refreshView(); return; }
+  /* 익명 로그인(점검자 기기 확인용)은 관리자 판정 대상이 아니다 */
+  if(!user || user.isAnonymous || !user.email){ myRole=null; mySites=[]; isAdmin=false; closeModal(); refreshView(); return; }
   const email=(user.email||'').toLowerCase();
   FB.getDoc(FB.doc(FB.db,'gnfm_users',email)).then(snap=>{
     if(snap.exists()){
@@ -2233,8 +2235,14 @@ function cloudStart(){
   cloudOn=true; setNet('연결 중…');
   let sitesEverConnected=false;
 
-  /* 로그인 상태를 서버 기준으로 동기화 */
-  if(FB.onAuth) FB.onAuth(FB.auth, resolveRole);
+  /* 로그인 상태를 서버 기준으로 동기화.
+     관리자가 로그아웃하면 익명 세션이 사라지므로 다시 익명으로 붙여 둔다
+     (점검 기록은 익명이라도 로그인 상태여야 저장된다). */
+  if(FB.onAuth) FB.onAuth(FB.auth, u=>{
+    resolveRole(u);
+    if(!u){ ensureAnonAuth(); return; }
+    syncInspectorFromServer();
+  });
 
   FB.onSnapshot(FB.collection(FB.db,'gnfm_sites'), snap=>{
     const sites = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
@@ -2262,6 +2270,221 @@ function addCloudLog(entry, onFail){
      kind:entry.kind||'note', inspector:entry.inspector||'', ts:Date.now()})
     .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다. 입력한 내용을 복구했어요 — 다시 시도해 주세요.','warn',4000); if(onFail) onFail(); });
   return true;
+}
+
+/* ============================================================
+   점검자 코드 — 지정한 사람만 점검 기록을 남길 수 있게
+   gnfm_codes/{코드}   : 관리자가 발급. {name, sites[]}
+   gnfm_devices/{uid}  : 코드를 입력한 기기. 익명 로그인 uid가 문서 id
+   점검 기록은 규칙에서 "등록된 기기인지"만 확인하므로 코드 자체는 이력에 남지 않는다.
+   ============================================================ */
+const INSPECTOR_KEY = 'gnfm-inspector-v2';
+let myInspector = null;   // {code, name}
+let anonReady = true;     // Firebase 콘솔에서 익명 인증이 켜져 있는지
+let _anonTried = false;
+
+/* 익명 로그인은 실패해도 한 번만 시도한다 (콘솔에서 꺼져 있으면 계속 실패하므로) */
+function ensureAnonAuth(){
+  if(_anonTried || !FB || !FB.signInAnon) return;
+  _anonTried = true;
+  FB.signInAnon(FB.auth).catch(e=>{
+    anonReady = false;
+    console.warn('익명 인증 실패 — Firebase 콘솔에서 익명 로그인을 켜야 합니다.', e);
+  });
+}
+
+function loadInspectorLocal(){
+  try{ const r=localStorage.getItem(INSPECTOR_KEY); myInspector = r?JSON.parse(r):null; }catch(e){ myInspector=null; }
+}
+function saveInspectorLocal(v){
+  myInspector = v;
+  try{ v ? localStorage.setItem(INSPECTOR_KEY, JSON.stringify(v)) : localStorage.removeItem(INSPECTOR_KEY); }catch(e){}
+}
+function inspectorName(){ return myInspector ? myInspector.name : ''; }
+
+const normCode = s => String(s||'').trim().toUpperCase().replace(/\s/g,'');
+
+/* 서버에 등록된 기기인지 확인 — 다른 기기에서 코드가 삭제됐으면 여기서 풀린다 */
+function syncInspectorFromServer(){
+  if(!cloudOn || !FB.auth.currentUser) return;
+  const uid = FB.auth.currentUser.uid;
+  FB.getDoc(FB.doc(FB.db,'gnfm_devices',uid)).then(snap=>{
+    if(snap.exists()){
+      const d=snap.data();
+      saveInspectorLocal({code:d.code, name:d.name});
+    }else if(myInspector){
+      saveInspectorLocal(null);
+      toast('점검 권한이 해제되었습니다. 관리자에게 코드를 다시 받아 주세요.','warn',5000);
+    }
+    refreshInspectorLabel();
+  }).catch(e=>console.warn(e));
+}
+
+function refreshInspectorLabel(){
+  const el=document.getElementById('inspectorNameShow');
+  if(el) el.textContent = inspectorName() || '미등록';
+}
+
+/* 점검 제출 전에 반드시 통과해야 하는 관문 */
+function requireInspector(onOk){
+  if(myInspector){ onOk(); return true; }
+  askInspectorCode(onOk);
+  return false;
+}
+
+function askInspectorCode(onDone){
+  openModal('점검자 코드 입력', `
+    <p style="margin:0 0 14px;font-size:12.5px;color:var(--fg-3);line-height:1.7">
+      점검 기록을 남기려면 관리자에게 받은 <b style="color:var(--fg)">점검자 코드</b>가 필요합니다.<br>
+      <b style="color:var(--fg)">이 기기에 저장되어 다음부터는 묻지 않습니다.</b>
+    </p>
+    <div class="fld"><label>점검자 코드</label>
+      <input id="inspCode" type="text" placeholder="예: HG7412" maxlength="16"
+             style="text-transform:uppercase;letter-spacing:.12em;font-weight:800;font-family:var(--mono)">
+      <span class="hint" id="inspHint">코드를 모르면 시설 관리자에게 문의하세요.</span></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" id="inspGo" onclick="submitInspectorCode()">확인</button>`);
+  window.__inspCb = onDone;
+  setTimeout(()=>{
+    const el=document.getElementById('inspCode');
+    if(el){ el.focus(); el.addEventListener('keydown',e=>{ if(e.key==='Enter') submitInspectorCode(); }); }
+  },60);
+}
+
+function submitInspectorCode(){
+  const code = normCode(val('inspCode'));
+  const hint = document.getElementById('inspHint');
+  const btn  = document.getElementById('inspGo');
+  if(!code){ toast('코드를 입력해 주세요.','warn'); return; }
+
+  if(!cloudOn){
+    if(hint){ hint.textContent='네트워크에 연결되어 있지 않아 코드를 확인할 수 없습니다.'; hint.style.color='var(--danger-fg)'; }
+    return;
+  }
+  if(btn){ btn.disabled=true; btn.textContent='확인 중…'; }
+
+  FB.getDoc(FB.doc(FB.db,'gnfm_codes',code)).then(snap=>{
+    if(!snap.exists()){
+      if(hint){ hint.textContent='등록되지 않은 코드입니다. 다시 확인해 주세요.'; hint.style.color='var(--danger-fg)'; }
+      if(btn){ btn.disabled=false; btn.textContent='확인'; }
+      return;
+    }
+    const name = snap.data().name || '이름 없음';
+    const uid  = FB.auth.currentUser && FB.auth.currentUser.uid;
+    if(!uid){
+      if(hint){
+        hint.textContent = anonReady
+          ? '기기 인증이 준비되지 않았습니다. 새로고침 후 다시 시도해 주세요.'
+          : '기기 인증이 꺼져 있습니다. 관리자에게 Firebase 익명 로그인 설정을 요청하세요.';
+        hint.style.color='var(--danger-fg)';
+      }
+      if(btn){ btn.disabled=false; btn.textContent='확인'; }
+      return;
+    }
+    return FB.setDoc(FB.doc(FB.db,'gnfm_devices',uid), {code, name, at:Date.now()}).then(()=>{
+      saveInspectorLocal({code, name});
+      closeModal();
+      refreshInspectorLabel();
+      toast(`${name} 님으로 등록되었습니다.`);
+      const cb=window.__inspCb; window.__inspCb=null;
+      if(cb) cb();
+    });
+  }).catch(e=>{
+    console.warn(e);
+    if(hint){ hint.textContent='확인에 실패했습니다. 연결 상태를 확인해 주세요.'; hint.style.color='var(--danger-fg)'; }
+    if(btn){ btn.disabled=false; btn.textContent='확인'; }
+  });
+}
+
+/* ---- 점검자 코드 관리 (관리자) ---- */
+function randomCode(name){
+  const base = String(name||'').replace(/[^A-Za-z가-힣]/g,'').slice(0,2).toUpperCase() || 'GN';
+  const initials = /[가-힣]/.test(base) ? 'GN' : base;
+  return initials + Math.floor(1000 + Math.random()*9000);
+}
+
+function openInspectorCodes(){
+  if(!requireAdmin()) return;
+  if(!cloudOn) return toast('네트워크에 연결된 상태에서만 관리할 수 있습니다.','warn');
+  Promise.all([
+    FB.getDocs(FB.collection(FB.db,'gnfm_codes')),
+    FB.getDocs(FB.collection(FB.db,'gnfm_devices'))
+  ]).then(([cs,ds])=>{
+    const codes = cs.docs.map(d=>Object.assign({code:d.id}, d.data()));
+    const used  = {};
+    ds.docs.forEach(d=>{ const c=(d.data()||{}).code; if(c) used[c]=(used[c]||0)+1; });
+    renderInspectorCodes(codes, used);
+  }).catch(e=>{ console.warn(e); toast('목록을 불러오지 못했습니다.','warn'); });
+}
+
+function renderInspectorCodes(codes, used){
+  codes.sort((a,b)=> (a.name||'').localeCompare(b.name||''));
+  const rows = codes.map(c=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--surface-line)">
+      <span style="flex:1;min-width:0">
+        <b style="font-size:13px">${esc(c.name||'이름 없음')}</b>
+        <span style="display:block;font-size:12px;color:var(--fg-4)">
+          <code style="font-family:var(--mono);font-weight:800;letter-spacing:.1em;color:var(--brand-600)">${esc(c.code)}</code>
+          · 등록 기기 ${used[c.code]||0}대
+        </span>
+      </span>
+      <button class="btn btn--ghost" style="width:auto;flex:none;padding:6px 10px;font-size:11px" onclick="copyInspectorCode('${esc(c.code)}')">복사</button>
+      <button class="btn btn--danger" style="width:auto;flex:none;padding:6px 10px;font-size:11px" onclick="deleteInspectorCode('${esc(c.code)}')">삭제</button>
+    </div>`).join('');
+
+  openModal('점검자 코드 관리', `
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--fg-3);line-height:1.7">
+      코드를 받은 사람만 점검 결과를 제출할 수 있습니다.<br>
+      점검자는 <b style="color:var(--fg)">처음 한 번만</b> 코드를 입력하면 그 휴대폰에 저장됩니다.
+    </p>
+    <div style="max-height:260px;overflow:auto;margin-bottom:14px">
+      ${rows || '<p style="font-size:12.5px;color:var(--fg-4);margin:6px 0">발급된 코드가 없습니다.</p>'}
+    </div>
+    <div class="fld"><label>점검자 추가</label>
+      <input id="newInspName" type="text" placeholder="이름 (예: 김남형)" maxlength="20">
+      <span class="hint">코드는 자동으로 만들어집니다.</span></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>
+     <button class="btn btn--primary" onclick="addInspectorCode()">추가</button>`);
+}
+
+function addInspectorCode(){
+  if(!requireAdmin()) return;
+  const name = val('newInspName').trim();
+  if(!name) return toast('이름을 입력해 주세요.','warn');
+  const code = randomCode(name);
+  FB.setDoc(FB.doc(FB.db,'gnfm_codes',code), {name, createdAt:Date.now()})
+    .then(()=>{ toast(`${name} 님 코드: ${code}`,'ok',6000); openInspectorCodes(); })
+    .catch(e=>{ console.warn(e); toast('추가에 실패했습니다.','warn'); });
+}
+
+function copyInspectorCode(code){
+  navigator.clipboard.writeText(code)
+    .then(()=>toast(`코드 ${code} 를 복사했습니다.`))
+    .catch(()=>toast('복사에 실패했습니다.','warn'));
+}
+
+function deleteInspectorCode(code){
+  if(!requireAdmin()) return;
+  askConfirm(`코드 ${code} 를 삭제할까요? 이 코드로 등록된 기기는 더 이상 점검을 제출할 수 없습니다.`, ()=>{
+    FB.getDocs(FB.collection(FB.db,'gnfm_devices')).then(ds=>{
+      const kill = ds.docs.filter(d=>(d.data()||{}).code===code)
+        .map(d=>FB.deleteDoc(FB.doc(FB.db,'gnfm_devices',d.id)));
+      return Promise.all(kill);
+    }).then(()=>FB.deleteDoc(FB.doc(FB.db,'gnfm_codes',code)))
+      .then(()=>{ toast(`코드 ${code} 를 삭제했습니다.`,'warn'); openInspectorCodes(); })
+      .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
+  });
+}
+
+/* 기기에서 점검자 등록 해제 (다른 사람에게 넘길 때) */
+function clearInspector(){
+  askConfirm('이 기기의 점검자 등록을 해제할까요? 다음 점검 때 코드를 다시 입력해야 합니다.', ()=>{
+    const uid = cloudOn && FB.auth.currentUser ? FB.auth.currentUser.uid : null;
+    saveInspectorLocal(null);
+    refreshInspectorLabel();
+    if(uid) FB.deleteDoc(FB.doc(FB.db,'gnfm_devices',uid)).catch(e=>console.warn(e));
+    toast('점검자 등록을 해제했습니다.','warn');
+  });
 }
 
 addEventListener('fb-ready', cloudStart);
@@ -2594,8 +2817,8 @@ function render(key){
           <div class="progressrow__meta">
             <div class="progressrow__t" id="progT">점검 항목 0 / ${d.checklist.length} 완료</div>
             <div class="progressrow__s">모든 항목 확인 후 결과를 제출하세요.</div>
-            <div class="progressrow__s" style="margin-top:4px">점검자: <b id="inspectorNameShow">${esc(getInspectorName()||'미입력')}</b>
-              <a onclick="askInspectorName(()=>{document.getElementById('inspectorNameShow').textContent=getInspectorName();})" style="color:var(--brand-600);cursor:pointer;text-decoration:underline;margin-left:4px">변경</a></div>
+            <div class="progressrow__s" style="margin-top:4px">점검자: <b id="inspectorNameShow">${esc(inspectorName()||'미등록')}</b>
+              <a onclick="${myInspector?'clearInspector()':'askInspectorCode(refreshInspectorLabel)'}" style="color:var(--brand-600);cursor:pointer;text-decoration:underline;margin-left:4px">${myInspector?'해제':'코드 입력'}</a></div>
           </div>
         </div>
         <div class="checks">${checksHtml}</div>
@@ -2706,6 +2929,9 @@ function openSettings(){
       <span class="hint">${authOn()
         ? '로그인 계정('+((FB.auth.currentUser&&FB.auth.currentUser.email)||'')+')의 비밀번호가 바뀝니다. 변경하지 않으려면 비워 두세요.'
         : '변경하지 않으려면 비워 두세요.'}</span></div>
+    <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
+      <button class="btn btn--ghost" style="width:100%" onclick="openInspectorCodes()">${svg(LOCK_ICON)} 점검자 코드 관리</button>
+      <span class="hint">코드를 받은 사람만 점검 결과를 제출할 수 있습니다.</span></div>
     ${su&&authOn()?`<div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
       <button class="btn btn--ghost" style="width:100%" onclick="openAdminUsers()">${svg(GEAR_ICON)} 관리자 계정 관리</button>
       <span class="hint">전체 관리자 / 사업장 관리자를 추가하고 담당 시설을 지정합니다.</span></div>`:''}`,
@@ -2938,8 +3164,8 @@ function submitNote(){
   const txt=el.value.trim();
   if(!txt) return toast('특이사항 내용을 입력해 주세요.','warn');
   const d=equipmentData[currentKey]; if(!d) return;
-  if(!getInspectorName()){ askInspectorName(()=>submitNote()); return; }
-  const who=getInspectorName();
+  if(!requireInspector(()=>submitNote())) return;
+  const who=inspectorName();
   const entry={t:`특이사항(${who}) · `+txt, d:stamp(), tone:'warn', kind:'note', inspector:who};
   if(btn) btn.disabled=true;
   const wasCloud = addCloudLog(entry, ()=>{ el.value=txt; }); // 실패 시 입력값 복구
@@ -3042,10 +3268,10 @@ function submitChecklist(){
     missing[0].closest('.check').scrollIntoView({behavior:'smooth',block:'center'});
     return;
   }
-  if(!getInspectorName()){ askInspectorName(()=>submitChecklist()); return; }
+  if(!requireInspector(()=>submitChecklist())) return;
   if(submitBtn) submitBtn.disabled=true;
   const d=equipmentData[currentKey];
-  const who=getInspectorName();
+  const who=inspectorName();
   const entry={t:`현장 점검 완료 · ${who} 제출`,d:stamp(),tone:'ok',kind:'check',inspector:who};
   const wasCloud = addCloudLog(entry, ()=>{ boxes.forEach(b=>b.checked=true); updateProgress(); });
   if(!wasCloud){ d.logs.unshift(entry); saveDB(); render(currentKey); }
@@ -3270,32 +3496,6 @@ function printLabel(){
 /* ============================================================
    TOAST / THEME / UTIL
    ============================================================ */
-/* 점검자 이름 — 기기에 저장해두고 최초 1회만 물어봄 */
-function getInspectorName(){
-  try{ return localStorage.getItem('gnfm-inspector')||''; }catch(e){ return ''; }
-}
-function setInspectorName(n){
-  try{ localStorage.setItem('gnfm-inspector', n); }catch(e){}
-}
-function askInspectorName(onDone){
-  const saved=getInspectorName();
-  openModal('점검자 이름', `
-    <div class="fld"><label>이름 (또는 소속·직책)</label>
-      <input id="inspectorNameInput" type="text" value="${esc(saved)}" placeholder="예: 김남형" maxlength="20">
-      <span class="hint">이 기기에 저장되어 다음 점검부터는 다시 묻지 않습니다. 나중에 설정에서 바꿀 수 있어요.</span></div>`,
-    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
-     <button class="btn btn--primary" id="inspectorNameGo" onclick="confirmInspectorName()">확인</button>`);
-  window.__inspectorNameCb = onDone;
-}
-function confirmInspectorName(){
-  const v=val('inspectorNameInput').trim();
-  if(!v){ toast('이름을 입력해 주세요.','warn'); return; }
-  setInspectorName(v);
-  closeModal();
-  const cb=window.__inspectorNameCb; window.__inspectorNameCb=null;
-  if(cb) cb(v);
-}
-
 function toast(msg,tone,duration){
   const wrap=document.getElementById('toasts');
   const el=document.createElement('div');
@@ -3723,6 +3923,7 @@ document.getElementById('themeBtn').addEventListener('click',()=>{
     else if(matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.setAttribute('data-theme','dark');
   }catch(e){}
 
+  loadInspectorLocal();
   document.getElementById('syncAt').textContent=stamp();
   try{ if(localStorage.getItem('gnfm-swiped')) document.getElementById('swipeHint').classList.add('is-gone'); }catch(e){}
 
