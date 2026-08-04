@@ -1545,13 +1545,12 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
 }
 
 /* ============ Print: 현장 부착용 QR 라벨 ============ */
+/* 인쇄할 때는 라벨만 남긴다 — 화면 요소가 하나라도 딸려 나가면 첫 장이 낭비된다 */
 @media print{
-  body::before,.appbar,.eqbar,.toasts,.no-print{display:none !important}
   body{background:#fff}
-  .wrap{padding:0;max-width:none}
-  .grid{display:block}
-  .print-label{display:block !important}
-  .card,.hero{display:none !important}
+  body::before{display:none !important}
+  body > *{display:none !important}
+  body > .print-label{display:block !important}
 }
 /* 라벨은 기존보다 40% 작게 잡고, A4 한 장에 여러 장이 들어가도록 격자로 배치한다.
    잘라 쓰기 쉽도록 칸마다 점선 테두리를 준다. */
@@ -1588,10 +1587,12 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
   border:1px solid color-mix(in srgb,var(--brand-500) 15%,transparent)}
 .tile__ico svg{width:23px;height:23px}
 .tile__b{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
-/* 설비명은 "진공온수보일러(난방·급탕)"처럼 괄호로 구별되는 경우가 많아,
-   한 줄로 자르면 정작 구별되는 부분이 사라진다. 2줄까지 보여준다. */
-.tile__n{font-size:15.5px;font-weight:800;letter-spacing:-.02em;color:var(--fg);line-height:1.3;
-  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+/* 설비명은 "진공온수보일러(난방·급탕)"처럼 괄호로 구별되는 경우가 많다.
+   괄호 앞부분은 2줄까지, 괄호 부분은 아래 줄에 따로 보여준다. */
+.tile__n{font-size:15.5px;font-weight:800;letter-spacing:-.02em;color:var(--fg);line-height:1.3;min-width:0}
+.tile__nm{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere}
+.tile__np{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;
+  font-size:12.5px;font-weight:700;color:var(--fg-3);margin-top:1px;letter-spacing:-.01em}
 .tile__s{font-size:12.5px;color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tile__tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
 .tile__chev{color:var(--fg-4);font-size:21px;flex:none;margin-left:4px}
@@ -2653,10 +2654,9 @@ function enterSite(id){
     <div style="display:flex;justify-content:space-between;align-items:center;padding:0 2px 4px;gap:8px">
       <span style="font-size:12px;color:var(--fg-3);font-weight:600">설비 목록</span>
       <span style="display:flex;gap:6px;flex:none">
-        ${isAdmin?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openDashboard('${id}')" title="이 시설의 점검 현황 요약">현황</button>`:''}
-        ${canEditSite(id)?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openEqImport()" title="설비현황 조사표(엑셀)를 읽어 설비를 한 번에 등록">엑셀 등록</button>`:''}
+        ${isAdmin?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openDashboard('${id}')" title="점검 현황 요약과 엑셀 자료 받기">점검 현황 · 자료</button>`:''}
+        ${isSuper()?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openEqImport()" title="설비현황 조사표(엑셀)를 읽어 설비를 한 번에 등록">엑셀 등록</button>`:''}
         ${keys.length?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="printSiteLabels()" title="이 시설 설비 라벨을 한 번에 인쇄 (한 장에 여러 개)">라벨 인쇄</button>`:''}
-        <button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="exportSiteLogs()" title="이 시설의 모든 설비 점검 이력을 엑셀로 저장">↓ 저장</button>
       </span>
     </div>
     <div class="tiles">${tiles || `<div class="empty">${keys.length?'해당 상태의 설비가 없습니다.':`이 시설에 등록된 설비가 없습니다.${canEditSite(id)?'<br>아래에서 첫 설비를 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}`}</div>`}
@@ -3627,10 +3627,10 @@ function exportEqLogs(){
   const st=getSite(currentSite);
   XLSX.writeFile(wb, `${safeFileName(st&&st.name)}_${safeFileName(d.short||d.title)}_점검이력.xlsx`);
 }
-function exportSiteLogs(){
+function exportSiteLogs(siteId){
   if(!requireAdmin()) return;
   if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
-  const st=getSite(currentSite); if(!st) return;
+  const st=getSite(siteId||currentSite); if(!st) return;
   const rows=[];
   Object.values(st.equipment||{}).forEach(d=>{
     (d.logs||[]).forEach(l=>{ rows.push({설비명:d.short||d.title, 날짜:l.d, 내용:l.t, 상태:toneLabel(l.tone)}); });
@@ -3710,6 +3710,7 @@ function openDashboard(siteId){
   const tdR='padding:8px;text-align:right;font-weight:600';
 
   const inspectorRows = Object.entries(s.inspectorStats).sort((a,b)=>b[1]-a[1]);
+  const arg = siteId ? `,'${siteId}'` : '';   /* 리포트 함수에 넘길 시설 인자 */
 
   const html = `
     <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:22px">
@@ -3763,7 +3764,7 @@ function openDashboard(siteId){
       </table>
     </div>`}
 
-    <div>
+    <div style="margin-bottom:22px">
       <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">점검자별 기록</h4>
       ${inspectorRows.length ? `
       <table style="width:100%;font-size:12px;border-collapse:collapse">
@@ -3772,12 +3773,22 @@ function openDashboard(siteId){
           ${inspectorRows.map(([name,count])=>`<tr style="border-top:1px solid var(--surface-line)"><td style="${td}">${esc(name)}</td><td style="${tdR}">${count}건</td></tr>`).join('')}
         </tbody>
       </table>` : `<p style="font-size:12.5px;color:var(--fg-4);margin:4px 0">아직 기록된 점검이 없습니다.</p>`}
+    </div>
+
+    <div style="border-top:1px solid var(--surface-line);padding-top:16px">
+      <h4 style="margin:0 0 4px;font-size:13.5px;font-weight:800">엑셀 자료 받기</h4>
+      <p style="margin:0 0 10px;font-size:12px;color:var(--fg-4);line-height:1.6">
+        전체 저장은 기간 제한 없이 모두, 리포트는 최근 기간만 담기며 점검자 칸이 함께 들어갑니다.</p>
+      <div style="display:grid;gap:7px">
+        ${scopeSite
+          ? `<button class="btn btn--ghost" onclick="exportSiteLogs('${siteId}')">전체 저장 · ${esc(scopeSite.name)} 점검 이력 전부</button>`
+          : `<button class="btn btn--ghost" style="opacity:.55;cursor:not-allowed" onclick="toast('전체 저장은 시설을 선택한 뒤 이용할 수 있습니다.','warn')">전체 저장 · 시설별로만 가능</button>`}
+        <button class="btn btn--ghost" onclick="generatePeriodReport(7,'주간'${arg})">주간 리포트 · 최근 7일</button>
+        <button class="btn btn--ghost" onclick="generatePeriodReport(30,'월간'${arg})">월간 리포트 · 최근 30일</button>
+      </div>
     </div>`;
-  const arg = siteId ? `,'${siteId}'` : '';
-  openModal(scopeSite ? `${scopeSite.name} 현황` : '전체 관리 대시보드', html,
-    `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>
-     <button class="btn btn--ghost" onclick="generatePeriodReport(7,'주간'${arg})">주간 리포트</button>
-     <button class="btn btn--primary" onclick="generatePeriodReport(30,'월간'${arg})">월간 리포트</button>`);
+  openModal(scopeSite ? `${scopeSite.name} · 점검 현황` : '전체 점검 현황', html,
+    `<button class="btn btn--primary" onclick="closeModal()">닫기</button>`);
 }
 
 /* ============================================================
@@ -3829,7 +3840,7 @@ function guessIcon(cat, name){
 }
 
 function openEqImport(){
-  if(!requireSiteAdmin(currentSite)) return;
+  if(!requireSuper()) return;
   if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
   let inp = document.getElementById('eqImportFile');
   if(!inp){
@@ -3946,7 +3957,7 @@ function renderImportPreview(){
 }
 
 function commitEqImport(groupName){
-  if(!requireSiteAdmin(currentSite)) return;
+  if(!requireSuper()) return;
   const list = _importGroups && _importGroups[groupName];
   if(!list) return toast('등록할 목록을 찾지 못했습니다.','warn');
   const st = getSite(currentSite); if(!st) return;
