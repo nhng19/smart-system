@@ -2905,7 +2905,8 @@ function render(key){
           <div class="progressrow__meta">
             <div class="progressrow__t" id="progT">점검 항목 0 / ${d.checklist.length} 완료</div>
             <div class="progressrow__s">모든 항목 확인 후 결과를 제출하세요.</div>
-            <div class="progressrow__s" style="margin-top:4px">점검자: <b id="inspectorNameShow">${esc(inspectorName()||'미등록')}</b>
+            <div class="progressrow__s" style="margin-top:4px">
+              제출하면 <b id="inspectorNameShow">${esc(inspectorName()||'미등록')}</b> 이름으로 기록됩니다
               <a onclick="${myInspector?'clearInspector()':'askInspectorCode(refreshInspectorLabel)'}" style="color:var(--brand-600);cursor:pointer;text-decoration:underline;margin-left:4px">${myInspector?'해제':'코드 입력'}</a></div>
           </div>
         </div>
@@ -3822,6 +3823,16 @@ function openDashboard(siteId){
       </table>` : `<p style="font-size:12.5px;color:var(--fg-4);margin:4px 0">아직 기록된 점검이 없습니다.</p>`}
     </div>
 
+    ${scopeSite && isSuper() ? `
+    <div style="border-top:1px solid var(--surface-line);padding-top:16px;margin-bottom:22px">
+      <h4 style="margin:0 0 4px;font-size:13.5px;font-weight:800;color:var(--danger-fg)">점검 이력 정리</h4>
+      <p style="margin:0 0 10px;font-size:12px;color:var(--fg-4);line-height:1.6">
+        시험 삼아 남긴 기록을 한 번에 지웁니다. <b style="color:var(--danger-fg)">되돌릴 수 없습니다.</b>
+        설비 정보는 지워지지 않습니다.</p>
+      <button class="btn btn--danger" style="width:100%" onclick="clearSiteLogs('${siteId}')">
+        ${esc(scopeSite.name)} 점검 이력 전체 삭제</button>
+    </div>` : ''}
+
     <div style="border-top:1px solid var(--surface-line);padding-top:16px">
       <h4 style="margin:0 0 4px;font-size:13.5px;font-weight:800">엑셀 자료 받기</h4>
       <p style="margin:0 0 10px;font-size:12px;color:var(--fg-4);line-height:1.6">
@@ -4026,6 +4037,38 @@ function commitEqImport(groupName){
   saveDB(); pushSite(currentSite); closeModal();
   enterSite(currentSite);
   toast(`설비 ${added}건을 등록했습니다.`,'ok',4000);
+}
+
+/* 시설 하나의 점검 이력을 통째로 삭제 (전체 관리자 전용).
+   설비 정보는 건드리지 않고 gnfm_logs 문서만 지운다. */
+function clearSiteLogs(siteId){
+  if(!requireSuper()) return;
+  const st = getSite(siteId); if(!st) return;
+
+  if(!cloudOn){
+    const n = Object.values(st.equipment||{}).reduce((a,d)=>a+((d.logs||[]).length),0);
+    if(!n) return toast('삭제할 점검 이력이 없습니다.','warn');
+    askConfirm(`"${st.name}"의 점검 이력 ${n}건을 이 기기에서 삭제할까요? 되돌릴 수 없습니다.`, ()=>{
+      Object.values(st.equipment||{}).forEach(d=>{ d.logs=[]; });
+      saveDB(); closeModal(); cloudRefresh();
+      toast(`점검 이력 ${n}건을 삭제했습니다.`,'warn',4000);
+    }, '전체 삭제');
+    return;
+  }
+
+  const targets = (CLOUD_LOGS||[]).filter(l=>l.site===siteId && l.id);
+  if(!targets.length) return toast('삭제할 점검 이력이 없습니다.','warn');
+
+  askConfirm(`"${st.name}"의 점검 이력 ${targets.length}건을 모두 삭제할까요? 되돌릴 수 없습니다.`, ()=>{
+    Promise.all(targets.map(l=>
+      FB.deleteDoc(FB.doc(FB.db,'gnfm_logs',l.id)).then(()=>true).catch(e=>{ console.warn(e); return false; })
+    )).then(res=>{
+      const failed = res.filter(x=>!x).length;
+      closeModal();
+      if(failed) toast(`${targets.length-failed}건 삭제, ${failed}건 실패 — 연결 확인 후 다시 시도해 주세요.`,'warn',5000);
+      else toast(`점검 이력 ${targets.length}건을 삭제했습니다.`,'warn',4000);
+    });
+  }, '전체 삭제');
 }
 
 /* 기간별 점검 리포트 — days 일 이내의 기록을 엑셀로. siteId를 주면 그 시설만 */
