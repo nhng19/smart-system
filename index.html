@@ -1753,7 +1753,7 @@ body.no-anim .hero{animation:none !important}
           <div class="btnrow">
             <button class="btn btn--dark" onclick="printLabel()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8" rx="1"/></svg>
-              라벨 인쇄
+              QR 인쇄
             </button>
             <button class="btn btn--ghost" onclick="copyLink()">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
@@ -2675,7 +2675,7 @@ function enterSite(id){
       <span style="display:flex;gap:6px;flex:none">
         ${isAdmin?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openDashboard('${id}')" title="점검 현황 요약과 엑셀 자료 받기">점검 현황 · 자료</button>`:''}
         ${isSuper()?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openEqImport()" title="설비현황 조사표(엑셀)를 읽어 설비를 한 번에 등록">엑셀 등록</button>`:''}
-        ${keys.length?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="printSiteLabels()" title="이 시설 설비 라벨을 한 번에 인쇄 (한 장에 여러 개)">라벨 인쇄</button>`:''}
+        ${keys.length?`<button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="printSiteLabels()" title="이 시설 설비 QR을 한 번에 인쇄 (한 장에 여러 개)">QR 인쇄</button>`:''}
       </span>
     </div>
     <div class="tiles">${tiles || `<div class="empty">${keys.length?'해당 상태의 설비가 없습니다.':`이 시설에 등록된 설비가 없습니다.${canEditSite(id)?'<br>아래에서 첫 설비를 추가해 보세요.':'<br>추가하려면 관리자 로그인이 필요합니다.'}`}</div>`}
@@ -2789,15 +2789,17 @@ function render(key){
   const cn=document.getElementById('crumbNow'); if(cn) cn.textContent = d.short;
   document.title = `${d.short} · GN-FM 스마트 시설관리`;
 
-  /* 주기가 설정된 설비는 '차기점검'을 자동 계산해 표시 */
+  /* 주기가 설정된 설비는 '차기점검'을 자동 계산해 표시.
+     예전에는 이 값을 상단 요약 지표 칸에 끼워 넣었지만, 지금은 분류 옆 배지로 옮겨서
+     요약 지표 3칸을 실제 수치(압력·유량 등)에 온전히 쓸 수 있다. */
   const _due = dueInfo(d);
   let _kpi = (d.kpi||[]).slice();
-  if(_due){
-    /* 자동 계산 항목과 겹치는 수동 입력만 제거하고, 나머지는 그대로 보존 */
-    _kpi = _kpi.filter(x=>!/차기점검|다음점검|^주기$|점검주기|역세주기|점검\s*주기/.test(x.k||''));
-    _kpi.unshift({k: _due.doneToday?'점검 상태':'차기점검', v:_due.label, u:_due.doneToday?'':_due.cycle, tone:_due.tone});
-  }
+  /* 수동 입력에 같은 내용이 남아있으면 배지와 중복되므로 제거만 한다 */
+  _kpi = _kpi.filter(x=>!/차기점검|다음점검|^주기$|점검주기|역세주기|점검\s*주기/.test(x.k||''));
   _kpi = _kpi.slice(0,3);
+
+  const dueColor = {ok:'#3EE58F', warn:'#FFC65C', danger:'#FF6B6B'}[_due&&_due.tone] || 'rgba(255,255,255,.55)';
+  const dueText = !_due ? '주기 미설정' : _due.doneToday ? '오늘 점검완료' : _due.none ? '미점검' : `차기점검 ${_due.label}`;
   const kpiHtml = _kpi.map(x=>`
     <div class="stat">
       <div class="stat__k">${esc(x.k)}</div>
@@ -2827,10 +2829,13 @@ function render(key){
           <div class="hero__glyph">${svg(iconPath(d.icon))}</div>
           <div style="flex:1;min-width:0">
             <div class="hero__eyebrow">
-              <span class="badge badge--glass">${d.category}</span>
-              <span class="badge badge--glass"><span class="badge__dot" style="background:${d.status.tone==='ok'?'#3EE58F':'#FFC65C'}"></span>${d.status.label}</span>
+              <span class="badge badge--glass"><span class="badge__dot" style="background:${d.status.tone==='ok'?'#3EE58F':'#FFC65C'}"></span>${esc(d.status.label)}</span>
             </div>
-            <h2>${d.title}</h2>
+            <div class="hero__eyebrow" style="margin-top:6px">
+              <span class="badge badge--glass">${esc(d.category)}</span>
+              <span class="badge badge--glass"><span class="badge__dot" style="background:${dueColor}"></span>${esc(dueText)}</span>
+            </div>
+            <h2>${esc(d.title)}</h2>
           </div>
         </div>
       </div>
@@ -3076,7 +3081,7 @@ function renderAdminUsersModal(users, editEmail, founderEmail){
     const siteNames = u.role==='super' ? '모든 시설' : ((u.sites||[]).map(id=>{const s=getSite(id);return s?s.name:id;}).join(', ')||'담당 시설 없음');
     const isFounder = founderEmail && u.email.toLowerCase()===founderEmail;
     return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--surface-line)">
-      <span style="flex:1;min-width:0;font-size:13px"><b>${esc(u.email)}</b>${isFounder?' <span class="badge badge--info" style="vertical-align:middle"><span class="badge__dot"></span>최초 관리자</span>':''}<br><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-4)" title="${esc(siteNames)}">${roleLabel} · ${esc(siteNames)}</span></span>
+      <span style="flex:1;min-width:0;font-size:13px"><b>${esc(u.email)}</b>${u.note?` <span style="color:var(--fg-3);font-weight:600">· ${esc(u.note)}</span>`:''}${isFounder?' <span class="badge badge--info" style="vertical-align:middle"><span class="badge__dot"></span>최초 관리자</span>':''}<br><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-4)" title="${esc(siteNames)}">${roleLabel} · ${esc(siteNames)}</span></span>
       <button class="btn btn--ghost" style="width:auto;flex:none;padding:6px 10px" onclick="openAdminUsers('${esc(u.email)}')">편집</button>
       ${isFounder
         ? `<button class="btn btn--ghost" style="width:auto;flex:none;padding:6px 10px;opacity:.5;cursor:not-allowed" onclick="toast('최초 관리자는 삭제할 수 없습니다.','warn')" title="최초 관리자는 삭제할 수 없습니다">삭제</button>`
@@ -3097,6 +3102,9 @@ function renderAdminUsersModal(users, editEmail, founderEmail){
       <input id="auEmail" type="email" value="${esc(editing?editing.email:'')}" placeholder="admin@example.com">
       <span class="hint">Firebase 콘솔에서 이메일/비밀번호 계정을 먼저 만든 뒤, 같은 이메일로 여기서 권한을 부여하세요.${
         editing?'<br>이메일을 바꾸면 <b>이전 계정의 권한은 사라지고</b> 새 이메일로 옮겨집니다.':''}</span></div>
+    <div class="fld"><label>이 계정은 누구인가요</label>
+      <input id="auNote" type="text" value="${esc(editing?editing.note||'':'')}" placeholder="예: 김남형 · 시설관리팀" maxlength="30">
+      <span class="hint">전체 관리자에게만 보이는 메모입니다. 목록에서 이메일 옆에 표시됩니다.</span></div>
     <div class="fld"><label>역할</label>
       <select id="auRole" onchange="document.getElementById('auSites').hidden=(this.value==='super')">
         <option value="site" ${!editing||editing.role!=='super'?'selected':''}>사업장 관리자 (담당 시설만 수정)</option>
@@ -3112,8 +3120,10 @@ function renderAdminUsersModal(users, editEmail, founderEmail){
      <button class="btn btn--primary" onclick="saveAdminUser()">${editing?'수정 저장':'추가'}</button>`);
 }
 function saveAdminUser(){
+  if(!requireSuper()) return;
   const email=val('auEmail').toLowerCase();
   if(!email||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return toast('올바른 이메일을 입력해 주세요.','warn');
+  const note=val('auNote').slice(0,30);
   const role=(document.getElementById('auRole')||{}).value||'site';
   const sites=Array.from(document.querySelectorAll('.auSite:checked')).map(x=>x.value);
   if(role==='site' && !sites.length) return toast('담당 시설을 하나 이상 선택해 주세요.','warn');
@@ -3125,7 +3135,7 @@ function saveAdminUser(){
   }
 
   const write = ()=> FB.setDoc(FB.doc(FB.db,'gnfm_users',email),
-    {role, sites:role==='super'?[]:sites, updatedAt:Date.now()});
+    {role, sites:role==='super'?[]:sites, note, updatedAt:Date.now()});
 
   const done = ()=>{ toast(renaming?`권한을 ${email} 로 옮겼습니다.`:'관리자 권한을 저장했습니다.'); openAdminUsers(); };
 
