@@ -1474,6 +1474,11 @@ html[data-theme="dark"] .check:hover{background:var(--brand-50)}
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms !important;transition-duration:.01ms !important}
 }
+/* 서버 갱신으로 다시 그릴 때는 등장 애니메이션을 재생하지 않는다 (화면 깜빡임 방지) */
+body.no-anim .anim,
+body.no-anim .tile,
+body.no-anim .pagehead,
+body.no-anim .hero{animation:none !important}
 
 /* ============ Footer ============ */
 .foot{
@@ -2172,11 +2177,29 @@ function applyCloudLogs(){
   }));
 }
 
+/* 서버에서 변경 알림이 올 때마다 화면을 다시 그리면 깜빡인다.
+   - 두 컬렉션(sites/logs) 알림이 연달아 오므로 잠깐 모아서 한 번만 그린다
+   - 다시 그리는 동안에는 등장 애니메이션을 끈다
+   - 점검표에 체크 중이거나 특이사항을 쓰는 중이면 화면을 갈아엎지 않는다 */
+let _refreshTimer = null;
 function cloudRefresh(){
+  clearTimeout(_refreshTimer);
+  _refreshTimer = setTimeout(doCloudRefresh, 180);
+}
+function hasUnsavedInput(){
+  if(level!=='eq') return false;
+  if([...document.querySelectorAll('[data-check]')].some(b=>b.checked)) return true;
+  const note=document.getElementById('noteInput');
+  return !!(note && note.value.trim());
+}
+function doCloudRefresh(){
   if(currentSite) equipmentData=(getSite(currentSite)||{}).equipment||{};
+  if(hasUnsavedInput()) return;
+  document.body.classList.add('no-anim');
   if(level==='eq' && equipmentData[currentKey]){ renderSegs(); render(currentKey); }
   else if(level==='site') enterSite(currentSite);
   else showRoom();
+  setTimeout(()=>document.body.classList.remove('no-anim'), 80);
 }
 
 /* 예전 단일 문서(gnfm/master)에 남아있던 데이터를 새 구조(gnfm_sites)로 이전.
@@ -2559,7 +2582,7 @@ function showRoom(){
     return `<div class="tile" onclick="enterSite('${st.id}')">
       <span class="tile__ico">${svg(ROOM_ICON)}</span>
       <span class="tile__b">
-        <span class="tile__n" title="${esc(st.name)}">${esc(st.name)}</span>
+        ${tileNameHTML(st.name)}
         <span class="tile__s">${esc(st.sub||'')}</span>
         <span class="tile__tags"><span class="badge badge--info">설비 ${n}종</span></span>
       </span>
@@ -2633,7 +2656,7 @@ function enterSite(id){
     return `<div class="tile" onclick="openEquipment('${k}')">
       <span class="tile__ico">${svg(iconPath(d.icon))}</span>
       <span class="tile__b">
-        <span class="tile__n" title="${esc(d.title||d.short)}">${esc(d.short||d.title)}</span>
+        ${tileNameHTML(d.short||d.title, d.title||d.short)}
         <span class="tile__tags">
           <span class="badge badge--${tone==='ok'?'ok':'warn'}">${esc((d.status&&d.status.label)||'상태 미지정')}</span>
           ${(()=>{const u=dueInfo(d); return u
@@ -2724,6 +2747,30 @@ function dueInfo(d){
   };
 }
 const esc = t => String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* 이름에서 괄호 부분을 떼어낸다.
+   "수위조절조(경영풀)" → 본명 "수위조절조", 괄호 "(경영풀)"
+   괄호가 앞에 붙은 "(탱크) 급탕순환펌프"도 같은 방식으로 분리한다. */
+const PAREN_RE = /[（(][^）)]*[）)]/g;
+function splitName(s){
+  const t = String(s||'').trim();
+  const parens = t.match(PAREN_RE);
+  if(!parens) return {base:t, paren:''};
+  const base = t.replace(PAREN_RE,' ').replace(/\s+/g,' ').trim();
+  /* 원본에 "( 바닥 난방용)"처럼 괄호 안쪽 공백이 들어간 경우가 있어 정리한다 */
+  const paren = parens
+    .map(p=>p.replace(/\s+/g,' ').replace(/([（(])\s+/,'$1').replace(/\s+([）)])/,'$1'))
+    .join(' ');
+  return base ? {base, paren} : {base:t, paren:''};
+}
+/* 타일에 들어갈 이름 마크업 — 괄호는 아랫줄로 */
+function tileNameHTML(name, fullTitle){
+  const {base, paren} = splitName(name);
+  return `<span class="tile__n" title="${esc(fullTitle||name)}">`
+    + `<span class="tile__nm">${esc(base)}</span>`
+    + (paren?`<span class="tile__np">${esc(paren)}</span>`:'')
+    + `</span>`;
+}
 
 let currentKey = 'hair_catcher';
 
