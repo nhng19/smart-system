@@ -2810,13 +2810,15 @@ function render(key){
   const cn=document.getElementById('crumbNow'); if(cn) cn.textContent = d.short;
   document.title = `${d.short} · GN-FM 스마트 시설관리`;
 
-  /* 주기가 설정된 설비는 '차기점검'을 자동 계산해 표시.
-     예전에는 이 값을 상단 요약 지표 칸에 끼워 넣었지만, 지금은 분류 옆 배지로 옮겨서
-     요약 지표 3칸을 실제 수치(압력·유량 등)에 온전히 쓸 수 있다. */
+  /* 주기가 설정된 설비는 '차기점검'을 자동 계산해 분류 옆 배지로 보여준다.
+     상단 요약 지표(3칸)는 아래 순서로 빈 칸 없이 채운다:
+     1) 차기점검(주기 있으면) → 2) 실제 입력된 사양 → 3) 그래도 남으면 가동 상태 */
   const _due = dueInfo(d);
-  let _kpi = (d.kpi||[]).slice();
-  /* 수동 입력에 같은 내용이 남아있으면 배지와 중복되므로 제거만 한다 */
-  _kpi = _kpi.filter(x=>!/차기점검|다음점검|^주기$|점검주기|역세주기|점검\s*주기/.test(x.k||''));
+  const manualKpi = (d.kpi||[]).filter(x=>!/차기점검|다음점검|^주기$|점검주기|역세주기|점검\s*주기/.test(x.k||''));
+  let _kpi = [];
+  if(_due) _kpi.push({k:_due.doneToday?'점검 상태':'차기점검', v:_due.label, u:_due.doneToday?'':_due.cycle, tone:_due.tone});
+  _kpi = _kpi.concat(manualKpi);
+  if(_kpi.length < 3) _kpi.push({k:'상태', v:d.status.label, tone:d.status.tone});
   _kpi = _kpi.slice(0,3);
 
   const dueColor = {ok:'#3EE58F', warn:'#FFC65C', danger:'#FF6B6B'}[_due&&_due.tone] || 'rgba(255,255,255,.55)';
