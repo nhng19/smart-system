@@ -3492,9 +3492,6 @@ function openEqEditor(key){
     <div class="frow">
       <div class="fld"><label>분류</label>
         <input id="eCat" value="${esc(d?d.category:'')}" placeholder="수처리 시설"></div>
-    </div>
-    <div class="frow">
-      <div class="fld"><label>아이콘</label><select id="eIcon">${iconOpts}</select></div>
       <div class="fld"><label>점검 주기</label>
         <select id="eCycle" onchange="document.getElementById('eCycleCustomWrap').style.display=(this.value==='custom')?'block':'none'">
           <option value="" ${!(d&&d.cycle)?'selected':''}>설정 안 함</option>
@@ -3506,6 +3503,9 @@ function openEqEditor(key){
           <input id="eCycleCustomDays" type="number" min="1" step="1" value="${d&&isCustomCycle(d.cycle)?customCycleDays(d.cycle):''}" placeholder="며칠마다? 예: 3">
           <span class="hint">숫자만 입력하세요 (일 단위).</span>
         </div></div>
+    </div>
+    <div class="frow">
+      <div class="fld"><label>아이콘</label><select id="eIcon">${iconOpts}</select></div>
       <div class="fld"><label>상태</label>
         <select id="eTone">
           <option value="ok" ${d&&d.status&&d.status.tone==='ok'?'selected':''}>정상 (초록)</option>
