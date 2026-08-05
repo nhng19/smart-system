@@ -10,6 +10,15 @@
 <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>window.__XLSX_READ = window.XLSX;</script>
+<!-- 무료 SheetJS(XLSX)는 셀 서식(배경색·굵게 등) 저장을 지원하지 않아,
+     리포트를 보기 좋게 꾸미는 용도로만 스타일 저장을 지원하는 xlsx-js-style을 추가로 불러온다.
+     읽기(엑셀 설비 등록 등)는 위에서 불러온 원래 XLSX를 그대로 쓴다. -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+<script>
+  window.XLSXStyle = window.XLSX;      // 스타일 저장이 되는 쪽
+  window.XLSX = window.__XLSX_READ;    // 기존 코드가 쓰던 XLSX는 원래 것으로 되돌려 둔다
+</script>
 <script>
 /* 오프라인 QR 엔진 — MIT (c) 2009 Kazuhiko Arase */
 (function(){
@@ -1232,6 +1241,17 @@ html[data-theme="dark"] .moon{display:none}
 .card__body{padding:16px}
 .card__foot{padding:12px 16px;border-top:1px solid var(--surface-line);background:var(--bg-inset)}
 
+/* ============ 자료 받기 행 (대시보드의 엑셀 내보내기 등) ============ */
+.xls-row{display:flex;align-items:center;gap:12px;width:100%;padding:11px 12px;
+  border-radius:var(--r-md);background:var(--bg-inset);border:1px solid var(--surface-line);
+  text-align:left;cursor:pointer;transition:border-color .18s var(--ease),transform .18s var(--ease),box-shadow .18s var(--ease)}
+.xls-row:hover{border-color:var(--brand-300);transform:translateY(-1px);box-shadow:var(--sh-1)}
+.xls-row.is-disabled{opacity:.55;cursor:not-allowed}
+.xls-row.is-disabled:hover{border-color:var(--surface-line);transform:none;box-shadow:none}
+.xls-row__b{flex:1;min-width:0}
+.xls-row__t{font-size:13px;font-weight:800;color:var(--fg);letter-spacing:-.01em}
+.xls-row__s{font-size:11.5px;color:var(--fg-4);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* ============ Hero (equipment header) ============ */
 .hero{
   position:relative;overflow:hidden;
@@ -1987,6 +2007,7 @@ const CHART_ICON = '<path d="M3 3v18h18"/><path d="M7 15v-4"/><path d="M12 15V7"
 const LOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5"/>';
 const UNLOCK_ICON = '<rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M7.5 10.5V7a4.5 4.5 0 0 1 8.9-.8"/>';
 const BACK_ICON = '<path d="M15 18l-6-6 6-6"/>';
+const DOWNLOAD_ICON = '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>';
 
 /* 점검 주기 정의 — fixEq()가 로딩 시점에 참조하므로 반드시 먼저 선언한다 */
 const CYCLES = {
@@ -3651,34 +3672,108 @@ function stamp(){
    ============================================================ */
 function toneLabel(t){ return t==='warn'?'주의':(t==='info'?'정보':'정상'); }
 function safeFileName(s){ return String(s||'').replace(/[\\/:*?"<>|]/g,'_').trim() || '파일'; }
+
+/* ---- 리포트 서식 (xlsx-js-style) ----
+   무료 SheetJS는 셀 배경색·굵은 글씨를 저장하지 못해, 지금까지 내보낸 엑셀이 흰 바탕에
+   글자만 있는 표였다. 여기서는 헤더에 색을 넣고, 상태 칸을 정상/주의 색으로 강조하고,
+   위에 제목·요약 줄을 붙여서 그대로 보고서로 낼 수 있게 만든다. */
+const RPT_BRAND   = 'FF2050D8';
+const RPT_HEADER  = 'FF356AF0';
+const RPT_STRIPE  = 'FFF7F9FC';
+const RPT_TEXT    = 'FF1F2937';
+const RPT_SUBTEXT = 'FF6B7280';
+const RPT_BORDER  = {style:'thin', color:{rgb:'FFD9DEE8'}};
+const RPT_CELL_BORDER = {top:RPT_BORDER, bottom:RPT_BORDER, left:RPT_BORDER, right:RPT_BORDER};
+const RPT_STATUS_COLOR = { '정상':{bg:'FFE8F8EF', fg:'FF0A7A45'}, '주의':{bg:'FFFFF6E5', fg:'FF9A5B00'} };
+
+function rptFont(extra){ return Object.assign({name:'맑은 고딕', sz:10, color:{rgb:RPT_TEXT}}, extra||{}); }
+
+/* headers: 문자열 배열. rows: headers와 같은 순서의 문자열 2차원 배열.
+   statusColIdx: 상태 칸 인덱스(강조색 적용, 없으면 -1). wrapColIdx: 줄바꿈을 허용할 칸(내용 칸 등). */
+function buildStyledSheet(title, subtitle, headers, rows, colWidths, statusColIdx, wrapColIdx){
+  const X = window.XLSXStyle;
+  const colLetter = i => X.utils.encode_col(i);
+  const lastCol = headers.length - 1;
+
+  const aoa = [[title], [subtitle], [], headers].concat(rows);
+  const ws = X.utils.aoa_to_sheet(aoa);
+
+  ws['!cols'] = colWidths.map(w=>({wch:w}));
+  ws['!rows'] = [{hpx:26},{hpx:18},{hpx:6}];
+  ws['!merges'] = [
+    {s:{r:0,c:0}, e:{r:0,c:lastCol}},
+    {s:{r:1,c:0}, e:{r:1,c:lastCol}}
+  ];
+
+  ws['A1'].s = { font:rptFont({sz:14, bold:true, color:{rgb:'FFFFFFFF'}}),
+    fill:{patternType:'solid', fgColor:{rgb:RPT_BRAND}}, alignment:{vertical:'center', indent:1} };
+  ws['A2'].s = { font:rptFont({sz:9.5, color:{rgb:RPT_SUBTEXT}}), alignment:{vertical:'center', indent:1} };
+
+  headers.forEach((h,i)=>{
+    const cell = ws[colLetter(i)+'4'];
+    cell.s = { font:rptFont({bold:true, color:{rgb:'FFFFFFFF'}}),
+      fill:{patternType:'solid', fgColor:{rgb:RPT_HEADER}},
+      border:RPT_CELL_BORDER, alignment:{vertical:'center', horizontal:'center', wrapText:true} };
+  });
+
+  rows.forEach((row,ri)=>{
+    const rowNum = ri + 5;
+    const stripe = ri % 2 === 1;
+    row.forEach((val,ci)=>{
+      const cell = ws[colLetter(ci)+rowNum];
+      const statusColor = ci===statusColIdx ? RPT_STATUS_COLOR[val] : null;
+      const base = { border:RPT_CELL_BORDER,
+        alignment:{vertical:'center', horizontal: ci===statusColIdx?'center':'left', wrapText: ci===wrapColIdx} };
+      if(statusColor){
+        cell.s = Object.assign(base, { font:rptFont({bold:true, color:{rgb:statusColor.fg}}),
+          fill:{patternType:'solid', fgColor:{rgb:statusColor.bg}} });
+      } else {
+        cell.s = Object.assign(base, { font:rptFont() },
+          stripe ? {fill:{patternType:'solid', fgColor:{rgb:RPT_STRIPE}}} : {});
+      }
+    });
+  });
+
+  ws['!autofilter'] = {ref:`A4:${colLetter(lastCol)}4`};
+  return ws;
+}
+
 function exportEqLogs(){
   if(!requireAdmin()) return;
-  if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
+  if(!window.XLSXStyle) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
   const d=equipmentData[currentKey]; if(!d) return;
-  const rows=(d.logs||[]).map(l=>({날짜:l.d, 내용:l.t, 상태:toneLabel(l.tone)}));
-  if(!rows.length) return toast('내보낼 점검 이력이 없습니다.','warn');
-  const ws=XLSX.utils.json_to_sheet(rows);
-  ws['!cols']=[{wch:18},{wch:56},{wch:8}];
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, safeFileName(d.short||d.title).slice(0,28));
   const st=getSite(currentSite);
-  XLSX.writeFile(wb, `${safeFileName(st&&st.name)}_${safeFileName(d.short||d.title)}_점검이력.xlsx`);
+  const logs=(d.logs||[]).slice();
+  if(!logs.length) return toast('내보낼 점검 이력이 없습니다.','warn');
+  const headers=['날짜','내용','상태'];
+  const rows=logs.map(l=>[l.d||'', l.t||'', toneLabel(l.tone)]);
+  const ws=buildStyledSheet(
+    `${d.short||d.title} · 점검 이력`,
+    `${st?st.name:''} · 총 ${rows.length}건 · 생성일 ${stamp()}`,
+    headers, rows, [18,56,8], 2, 1);
+  const wb=XLSXStyle.utils.book_new();
+  XLSXStyle.utils.book_append_sheet(wb, ws, safeFileName(d.short||d.title).slice(0,28));
+  XLSXStyle.writeFile(wb, `${safeFileName(st&&st.name)}_${safeFileName(d.short||d.title)}_점검이력.xlsx`);
 }
 function exportSiteLogs(siteId){
   if(!requireAdmin()) return;
-  if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
+  if(!window.XLSXStyle) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
   const st=getSite(siteId||currentSite); if(!st) return;
   const rows=[];
   Object.values(st.equipment||{}).forEach(d=>{
-    (d.logs||[]).forEach(l=>{ rows.push({설비명:d.short||d.title, 날짜:l.d, 내용:l.t, 상태:toneLabel(l.tone)}); });
+    (d.logs||[]).forEach(l=>{ rows.push({설비명:d.short||d.title, 날짜:l.d||'', 내용:l.t||'', 상태:toneLabel(l.tone)}); });
   });
   if(!rows.length) return toast('내보낼 점검 이력이 없습니다.','warn');
   rows.sort((a,b)=> a.설비명===b.설비명 ? (a.날짜<b.날짜?1:-1) : (a.설비명>b.설비명?1:-1));
-  const ws=XLSX.utils.json_to_sheet(rows);
-  ws['!cols']=[{wch:16},{wch:18},{wch:56},{wch:8}];
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '점검이력');
-  XLSX.writeFile(wb, `${safeFileName(st.name)}_전체_점검이력.xlsx`);
+  const headers=['설비명','날짜','내용','상태'];
+  const aoaRows=rows.map(r=>[r.설비명, r.날짜, r.내용, r.상태]);
+  const ws=buildStyledSheet(
+    `${st.name} · 전체 점검 이력`,
+    `총 ${rows.length}건 · 생성일 ${stamp()}`,
+    headers, aoaRows, [16,18,56,8], 3, 2);
+  const wb=XLSXStyle.utils.book_new();
+  XLSXStyle.utils.book_append_sheet(wb, ws, '점검이력');
+  XLSXStyle.writeFile(wb, `${safeFileName(st.name)}_전체_점검이력.xlsx`);
 }
 
 /* ============================================================
@@ -3706,7 +3801,7 @@ function eqStatus(eq){
 /* siteId를 주면 그 시설만, 안 주면 전체를 집계한다 */
 function calculateDashboardStats(siteId){
   let totalEq=0, okEq=0, overdueEq=0, noneEq=0, nocycleEq=0;
-  const sitesStats=[], inspectorStats={}, alerts=[];
+  const sitesStats=[], alerts=[];
   const targets = siteId ? DB.sites.filter(s=>s.id===siteId) : DB.sites;
 
   targets.forEach(st=>{
@@ -3723,17 +3818,11 @@ function calculateDashboardStats(siteId){
     if(eqs.length) sitesStats.push({id:st.id, name:st.name, total:eqs.length, ok:sOk, overdue:sOverdue, none:sNone});
   });
 
-  (CLOUD_LOGS||[]).forEach(log=>{
-    if(siteId && log.site!==siteId) return;
-    const key = logInspector(log);
-    inspectorStats[key] = (inspectorStats[key]||0) + 1;
-  });
-
   const managed = okEq + overdueEq + noneEq;
   return {
     totalEq, okEq, overdueEq, noneEq, nocycleEq, alerts,
     checkRate: managed>0 ? Math.round(okEq/managed*100) : 0,
-    sitesStats, inspectorStats
+    sitesStats
   };
 }
 
@@ -3746,7 +3835,6 @@ function openDashboard(siteId){
   const td='padding:8px';
   const tdR='padding:8px;text-align:right;font-weight:600';
 
-  const inspectorRows = Object.entries(s.inspectorStats).sort((a,b)=>b[1]-a[1]);
   const arg = siteId ? `,'${siteId}'` : '';   /* 리포트 함수에 넘길 시설 인자 */
 
   const html = `
@@ -3765,12 +3853,13 @@ function openDashboard(siteId){
       </div>
       <div style="background:var(--warn-bg);padding:16px;border-radius:var(--r-md);text-align:center">
         <div style="font-size:28px;font-weight:800;color:var(--warn-fg)">${s.noneEq}</div>
-        <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">한 번도 미점검</div>
+        <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">미점검</div>
       </div>
     </div>
 
     <div style="margin-bottom:22px">
-      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">조치 필요 설비 ${s.alerts.length}건</h4>
+      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">조치 필요 설비 ${s.alerts.length}건
+        ${s.alerts.length?`<span style="font-weight:600;color:var(--fg-4);font-size:11.5px">· 기한초과 ${s.overdueEq} · 미점검 ${s.noneEq}</span>`:''}</h4>
       ${s.alerts.length ? `
       <div style="max-height:220px;overflow-y:auto;border:1px solid var(--surface-line);border-radius:var(--r-sm)">
         <table style="width:100%;font-size:12px;border-collapse:collapse">
@@ -3801,17 +3890,6 @@ function openDashboard(siteId){
       </table>
     </div>`}
 
-    <div style="margin-bottom:22px">
-      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">점검자별 기록</h4>
-      ${inspectorRows.length ? `
-      <table style="width:100%;font-size:12px;border-collapse:collapse">
-        <thead><tr style="background:var(--bg-sunken)"><th style="${th}">점검자</th><th style="${thR}">기록 건수</th></tr></thead>
-        <tbody>
-          ${inspectorRows.map(([name,count])=>`<tr style="border-top:1px solid var(--surface-line)"><td style="${td}">${esc(name)}</td><td style="${tdR}">${count}건</td></tr>`).join('')}
-        </tbody>
-      </table>` : `<p style="font-size:12.5px;color:var(--fg-4);margin:4px 0">아직 기록된 점검이 없습니다.</p>`}
-    </div>
-
     ${scopeSite && isSuper() ? `
     <div style="border-top:1px solid var(--surface-line);padding-top:16px;margin-bottom:22px">
       <h4 style="margin:0 0 4px;font-size:13.5px;font-weight:800;color:var(--danger-fg)">점검 이력 정리</h4>
@@ -3823,15 +3901,41 @@ function openDashboard(siteId){
     </div>` : ''}
 
     <div style="border-top:1px solid var(--surface-line);padding-top:16px">
-      <h4 style="margin:0 0 4px;font-size:13.5px;font-weight:800">엑셀 자료 받기</h4>
-      <p style="margin:0 0 10px;font-size:12px;color:var(--fg-4);line-height:1.6">
-        전체 저장은 기간 제한 없이 모두, 리포트는 최근 기간만 담기며 점검자 칸이 함께 들어갑니다.</p>
-      <div style="display:grid;gap:7px">
-        ${scopeSite
-          ? `<button class="btn btn--ghost" onclick="exportSiteLogs('${siteId}')">전체 저장 · ${esc(scopeSite.name)} 점검 이력 전부</button>`
-          : `<button class="btn btn--ghost" style="opacity:.55;cursor:not-allowed" onclick="toast('전체 저장은 시설을 선택한 뒤 이용할 수 있습니다.','warn')">전체 저장 · 시설별로만 가능</button>`}
-        <button class="btn btn--ghost" onclick="generatePeriodReport(7,'주간'${arg})">주간 리포트 · 최근 7일</button>
-        <button class="btn btn--ghost" onclick="generatePeriodReport(30,'월간'${arg})">월간 리포트 · 최근 30일</button>
+      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">엑셀 자료 받기</h4>
+      <div style="display:grid;gap:8px">
+        ${scopeSite ? `
+        <button class="xls-row" onclick="exportSiteLogs('${siteId}')">
+          <span class="card__ico is-ok">${svg(DOWNLOAD_ICON)}</span>
+          <span class="xls-row__b">
+            <span class="xls-row__t">전체 저장</span>
+            <span class="xls-row__s">${esc(scopeSite.name)} · 기간 제한 없이 전체 이력</span>
+          </span>
+          <span class="tile__chev">›</span>
+        </button>` : `
+        <button class="xls-row is-disabled" onclick="toast('전체 저장은 시설을 선택한 뒤 이용할 수 있습니다.','warn')">
+          <span class="card__ico is-ok">${svg(DOWNLOAD_ICON)}</span>
+          <span class="xls-row__b">
+            <span class="xls-row__t">전체 저장</span>
+            <span class="xls-row__s">시설을 선택해야 받을 수 있습니다</span>
+          </span>
+          <span class="tile__chev">›</span>
+        </button>`}
+        <button class="xls-row" onclick="generatePeriodReport(7,'주간'${arg})">
+          <span class="card__ico">${svg(DOWNLOAD_ICON)}</span>
+          <span class="xls-row__b">
+            <span class="xls-row__t">주간 리포트</span>
+            <span class="xls-row__s">최근 7일 · 점검자 칸 포함</span>
+          </span>
+          <span class="tile__chev">›</span>
+        </button>
+        <button class="xls-row" onclick="generatePeriodReport(30,'월간'${arg})">
+          <span class="card__ico is-warn">${svg(DOWNLOAD_ICON)}</span>
+          <span class="xls-row__b">
+            <span class="xls-row__t">월간 리포트</span>
+            <span class="xls-row__s">최근 30일 · 점검자 칸 포함</span>
+          </span>
+          <span class="tile__chev">›</span>
+        </button>
       </div>
     </div>`;
   openModal(scopeSite ? `${scopeSite.name} · 점검 현황` : '전체 점검 현황', html,
@@ -4063,7 +4167,7 @@ function clearSiteLogs(siteId){
 /* 기간별 점검 리포트 — days 일 이내의 기록을 엑셀로. siteId를 주면 그 시설만 */
 function generatePeriodReport(days, label, siteId){
   if(!requireAdmin()) return;
-  if(!window.XLSX) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
+  if(!window.XLSXStyle) return toast('엑셀 기능을 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.','warn');
   const cutoff = Date.now() - days*86400000;
   const rows = [];
 
@@ -4074,26 +4178,30 @@ function generatePeriodReport(days, label, siteId){
     if(t < cutoff) return;
     const site = DB.sites.find(s=>s.id===log.site);
     const eq = site && site.equipment ? site.equipment[log.eq] : null;
-    rows.push({
-      날짜: log.d||'',
-      시설: site?site.name:'(삭제된 시설)',
-      설비: eq?(eq.short||eq.title):'(삭제된 설비)',
-      구분: log.kind==='check'?'점검완료':'특이사항',
-      내용: log.t||'',
-      상태: toneLabel(log.tone),
-      점검자: logInspector(log)
-    });
+    rows.push([
+      log.d||'',
+      site?site.name:'(삭제된 시설)',
+      eq?(eq.short||eq.title):'(삭제된 설비)',
+      log.kind==='check'?'점검완료':'특이사항',
+      log.t||'',
+      toneLabel(log.tone),
+      logInspector(log)
+    ]);
   });
 
   if(!rows.length) return toast(`최근 ${label} 점검 이력이 없습니다.`,'warn');
-  rows.sort((a,b)=> a.날짜<b.날짜?1:-1);
+  rows.sort((a,b)=> a[0]<b[0]?1:-1);
 
-  const scope = siteId ? safeFileName((getSite(siteId)||{}).name) : '전체';
-  const ws=XLSX.utils.json_to_sheet(rows);
-  ws['!cols']=[{wch:18},{wch:18},{wch:22},{wch:10},{wch:46},{wch:8},{wch:12}];
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, `${label}리포트`);
-  XLSX.writeFile(wb, `GN-FM_${scope}_${label}점검리포트_${stamp().split(' ')[0]}.xlsx`);
+  const scopeName = siteId ? (getSite(siteId)||{}).name : null;
+  const scope = safeFileName(scopeName || '전체');
+  const headers=['날짜','시설','설비','구분','내용','상태','점검자'];
+  const ws=buildStyledSheet(
+    `GN-FM ${label} 점검 리포트`,
+    `${scopeName?scopeName+' · ':''}최근 ${days}일 · 총 ${rows.length}건 · 생성일 ${stamp()}`,
+    headers, rows, [18,18,22,10,46,8,12], 5, 4);
+  const wb=XLSXStyle.utils.book_new();
+  XLSXStyle.utils.book_append_sheet(wb, ws, `${label}리포트`);
+  XLSXStyle.writeFile(wb, `GN-FM_${scope}_${label}점검리포트_${stamp().split(' ')[0]}.xlsx`);
   toast(`${label} 리포트 ${rows.length}건을 저장했습니다.`);
 }
 
