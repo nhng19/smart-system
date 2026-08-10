@@ -3586,7 +3586,7 @@ function openSiteEditor(id){
     `${st?`<button class="btn btn--danger" onclick="deleteSite('${st.id}')">삭제</button>`:''}
      <button class="btn btn--ghost" onclick="closeModal()">취소</button>
      <button class="btn btn--primary" onclick="saveSite(${st?`'${st.id}'`:'null'})">저장</button>`);
-  setTimeout(()=>document.getElementById('sName').focus(),60);
+  setTimeout(()=>{ const el=document.getElementById('sName'); if(el) el.focus(); },60);
 }
 function saveSite(id){
   if(!requireSuper()) return;
@@ -3672,7 +3672,7 @@ function openEqEditor(key){
     `${d?`<button class="btn btn--danger" onclick="deleteEq('${key}')">삭제</button>`:''}
      <button class="btn btn--ghost" onclick="closeModal()">취소</button>
      <button class="btn btn--primary" onclick="saveEq(${d?`'${key}'`:'null'})">저장</button>`);
-  setTimeout(()=>document.getElementById('eTitle').focus(),60);
+  setTimeout(()=>{ const el=document.getElementById('eTitle'); if(el) el.focus(); },60);
 }
 function saveEq(key){
   if(!requireSiteAdmin(currentSite)) return;
