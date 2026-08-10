@@ -1794,7 +1794,7 @@ body.no-anim .hero{animation:none !important}
         <div class="card__body">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px">
             <span style="font-size:12px;color:var(--fg-3);font-weight:600">점검 이력</span>
-            <button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="exportEqLogs()" title="이 설비의 점검 이력을 엑셀로 저장">↓ 저장</button>
+            <button class="btn btn--ghost" style="width:auto;flex:none;padding:4px 10px;font-size:11px" onclick="openDashboard(currentSite, currentKey)" title="이 시설의 점검 현황과 자료 받기">↓ 저장</button>
           </div>
           <div class="logs" id="logs"></div>
         </div>
@@ -2191,7 +2191,7 @@ function applyCloudLogs(){
   CLOUD_LOGS.forEach(l=>{
     const st=getSite(l.site); if(!st) return;
     const d=st.equipment&&st.equipment[l.eq]; if(!d) return;
-    d.logs.push({id:l.id, t:l.t, d:l.d, tone:l.tone||'ok', kind:l.kind||'', ts:l.ts||0});
+    d.logs.push({id:l.id, t:l.t, d:l.d, tone:l.tone||'ok', kind:l.kind||'', ts:l.ts||0, refId:l.refId||null, inspector:l.inspector||''});
   });
   DB.sites.forEach(st=>Object.values(st.equipment||{}).forEach(d=>{
     d.logs.sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -2211,7 +2211,8 @@ function hasUnsavedInput(){
   if(level!=='eq') return false;
   if([...document.querySelectorAll('[data-check]')].some(b=>b.checked)) return true;
   const note=document.getElementById('noteInput');
-  return !!(note && note.value.trim());
+  const res=document.getElementById('noteResolution');
+  return !!((note && note.value.trim()) || (res && res.value.trim()));
 }
 function doCloudRefresh(){
   if(currentSite) equipmentData=(getSite(currentSite)||{}).equipment||{};
@@ -2308,11 +2309,12 @@ function cloudStart(){
   }, err=>{ console.warn(err); });
 }
 
-function addCloudLog(entry, onFail){
+function addCloudLog(entry, onFail, onSuccess){
   if(!cloudOn) return false;
   FB.addDoc(FB.collection(FB.db,'gnfm_logs'),
     {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone,
-     kind:entry.kind||'note', inspector:entry.inspector||'', ts:Date.now()})
+     kind:entry.kind||'note', inspector:entry.inspector||'', refId:entry.refId||null, ts:Date.now()})
+    .then(ref=>{ if(onSuccess) onSuccess(ref.id); })
     .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다. 입력한 내용을 복구했어요 — 다시 시도해 주세요.','warn',4000); if(onFail) onFail(); });
   return true;
 }
@@ -2712,7 +2714,7 @@ function openEquipment(key){
     toast('해당 설비를 찾을 수 없습니다.','warn');
     return currentSite ? enterSite(currentSite) : showRoom();
   }
-  level='eq'; currentKey=key; logsExpanded=false;
+  level='eq'; currentKey=key; logsExpanded=false; logFilter='all';
   const st=getSite(currentSite);
   document.getElementById('listPane').hidden=true;
   document.getElementById('detailPane').hidden=false;
@@ -2951,6 +2953,10 @@ function render(key){
       </div>
       <div class="card__body">
         <textarea class="noteta" id="noteInput" placeholder="점검 중 발견한 이상 징후, 누수·소음·진동, 임시 조치 내용 등을 자유롭게 적어 주세요."></textarea>
+        <div class="fld" style="margin-top:10px">
+          <label>조치결과 (선택)</label>
+          <textarea class="noteta" id="noteResolution" style="min-height:56px" placeholder="바로 조치했다면 결과를 함께 적어 주세요. 나중에 이력 목록에서 특이사항을 눌러 따로 등록할 수도 있습니다."></textarea>
+        </div>
       </div>
       <div class="card__foot">
         <button class="btn btn--primary" id="noteSubmitBtn" onclick="submitNote()">${svg(I.send)}특이사항 등록</button>
@@ -2964,11 +2970,47 @@ function render(key){
 }
 
 let logsExpanded = false;
+let logFilter = 'all';   /* 'all' | 'check' | 'note' — 최근 점검 이력 목록의 종류 필터 */
+function setLogFilter(f){
+  logFilter = f;
+  const d=equipmentData[currentKey]; if(d) renderLogs(d);
+}
+/* 종류 없는 옛 기록(예: 설비 등록)은 특이사항이 아니므로 점검 쪽으로 묶는다 */
+function logMatchesFilter(l, f){
+  if(f==='all') return true;
+  if(f==='check') return l.kind==='check' || !l.kind;
+  if(f==='note') return l.kind==='note' || l.kind==='resolution';
+  return true;
+}
 function logItemHTML(l, i){
+  const delBtn = canEditSite(currentSite)
+    ? `<button class="log__del" title="이력 삭제" onclick="event.stopPropagation();deleteLog(${i})" aria-label="이력 삭제">✕</button>` : '';
+
+  /* 조치결과 이력 — 원본 특이사항 밑에 붙는 형태로, 살짝 들여써서 보여준다 */
+  if(l.kind==='resolution'){
+    return `<div class="log" style="padding-left:26px;opacity:.92">
+        <span class="log__dot is-ok" style="width:6px;height:6px"></span>
+        <div><div class="log__t" style="font-size:12.5px">↳ 조치결과 · ${esc(l.t)}</div><div class="log__d">${esc(l.d)}</div></div>
+        ${delBtn}
+      </div>`;
+  }
+
+  if(l.kind==='note' && l.id){
+    const d=equipmentData[currentKey];
+    const resolved = d && (d.logs||[]).some(x=>x.kind==='resolution' && x.refId===l.id);
+    return `<div class="log" style="cursor:pointer" onclick="openResolutionModal('${String(l.id).replace(/'/g,"\\'")}')" title="${resolved?'조치결과 보기':'조치결과 입력'}">
+        <span class="log__dot ${l.tone!=='ok'?'is-'+l.tone:''}"></span>
+        <div><div class="log__t">${esc(l.t)}</div><div class="log__d">${esc(l.d)}${resolved
+          ?` <span style="color:var(--ok-fg);font-weight:700">· 조치완료</span>`
+          :` <span style="color:var(--brand-600);font-weight:700">· 조치결과 입력</span>`}</div></div>
+        ${delBtn}
+      </div>`;
+  }
+
   return `<div class="log">
       <span class="log__dot ${l.tone!=='ok'?'is-'+l.tone:''}"></span>
       <div><div class="log__t">${esc(l.t)}</div><div class="log__d">${esc(l.d)}</div></div>
-      ${canEditSite(currentSite)?`<button class="log__del" title="이력 삭제" onclick="deleteLog(${i})" aria-label="이력 삭제">✕</button>`:''}
+      ${delBtn}
     </div>`;
 }
 function toggleLogsExpanded(){
@@ -2983,21 +3025,51 @@ function toggleLogsExpanded(){
 }
 function renderLogs(d){
   const box=document.getElementById('logs');
+  document.getElementById('logCount').textContent = d.logs.length + '건';
+
   if(!d.logs.length){
     box.innerHTML = `<p style="margin:6px 0;font-size:12.5px;color:var(--fg-4)">기록된 점검 이력이 없습니다.</p>`;
-  }else if(!logsExpanded){
-    const shown = d.logs.map((l,i)=>({l,i})).slice(0,5);
-    box.innerHTML = shown.map(({l,i})=>logItemHTML(l,i)).join('')
-      + (d.logs.length>5 ? `<button class="btn btn--ghost" style="width:100%;margin-top:8px" onclick="toggleLogsExpanded()">더보기 (총 ${d.logs.length}건) · 연도·월별로 보기</button>` : '');
+    syncAdminBtn();
+    return;
+  }
+
+  /* 종류 필터 칩 — 점검 완료와 특이사항이 섞여 있으면 훑어보기 어려워 걸러 볼 수 있게 한다 */
+  const allPairs = d.logs.map((l,i)=>({l,i}));
+  const counts = {
+    all: allPairs.length,
+    check: allPairs.filter(p=>logMatchesFilter(p.l,'check')).length,
+    note: allPairs.filter(p=>logMatchesFilter(p.l,'note')).length
+  };
+  if(logFilter!=='all' && !counts[logFilter]) logFilter='all';
+  const chipDefs=[['all','전체','var(--fg-2)'],['check','점검','var(--ok-fg)'],['note','특이사항','var(--warn-fg)']];
+  const chipsHtml = chipDefs.filter(([k])=>k==='all'||counts[k]).map(([k,lab,col])=>{
+    const on=logFilter===k;
+    return `<button onclick="setLogFilter('${k}')" style="flex:none;padding:5px 11px;border-radius:var(--r-pill);font-size:11.5px;font-weight:700;white-space:nowrap;border:1px solid ${on?'transparent':'var(--surface-line)'};background:${on?'var(--brand-600)':'var(--bg-elev)'};color:${on?'#fff':col}">${lab} ${counts[k]}</button>`;
+  }).join('');
+  const chipsRow = counts.check && counts.note
+    ? `<div class="no-print" style="display:flex;gap:5px;overflow-x:auto;margin-bottom:8px">${chipsHtml}</div>` : '';
+
+  const pairs = allPairs.filter(p=>logMatchesFilter(p.l, logFilter));
+  if(!pairs.length){
+    box.innerHTML = chipsRow + `<p style="margin:6px 0;font-size:12.5px;color:var(--fg-4)">해당하는 이력이 없습니다.</p>`;
+    syncAdminBtn();
+    return;
+  }
+
+  if(!logsExpanded){
+    const shown = pairs.slice(0,5);
+    box.innerHTML = chipsRow + shown.map(({l,i})=>logItemHTML(l,i)).join('')
+      + (pairs.length>5 ? `<button class="btn btn--ghost" style="width:100%;margin-top:8px" onclick="toggleLogsExpanded()">더보기 (총 ${pairs.length}건) · 연도·월별로 보기</button>` : '');
   }else{
     const groups=new Map();  // "YYYY-MM" -> [{l,i}]
-    d.logs.forEach((l,i)=>{
+    pairs.forEach(({l,i})=>{
       const dt=parseLogDate(l.d);
       const key = dt ? `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}` : '날짜 미상';
       if(!groups.has(key)) groups.set(key,[]);
       groups.get(key).push({l,i});
     });
-    box.innerHTML = `<button class="btn btn--ghost" style="width:100%;margin-bottom:8px" onclick="toggleLogsExpanded()">접기</button>`
+    box.innerHTML = chipsRow
+      + `<button class="btn btn--ghost" style="width:100%;margin-bottom:8px" onclick="toggleLogsExpanded()">접기</button>`
       + Array.from(groups.entries()).map(([key,items])=>{
           const label = key==='날짜 미상' ? key : `${key.slice(0,4)}년 ${+key.slice(5,7)}월`;
           return `<div class="logs__group">
@@ -3006,7 +3078,6 @@ function renderLogs(d){
           </div>`;
         }).join('');
   }
-  document.getElementById('logCount').textContent = d.logs.length + '건';
   syncAdminBtn();
 }
 
@@ -3210,7 +3281,7 @@ function refreshView(){
 }
 function requireAdmin(){
   if(isAdmin) return true;
-  toast('관리자만 수정할 수 있습니다.','warn');
+  toast('관리자만 이용할 수 있습니다.','warn');
   return false;
 }
 function authOn(){ return !!(cloudOn && FB && FB.auth && FB.signIn); }
@@ -3305,22 +3376,83 @@ function submitNote(){
   const el=document.getElementById('noteInput'); if(!el) return;
   const txt=el.value.trim();
   if(!txt) return toast('특이사항 내용을 입력해 주세요.','warn');
+  const resEl=document.getElementById('noteResolution');
+  const resTxt = resEl ? resEl.value.trim() : '';
   const d=equipmentData[currentKey]; if(!d) return;
   if(!requireInspector(()=>submitNote())) return;
   const who=inspectorName();
   const entry={t:`특이사항(${who}) · `+txt, d:stamp(), tone:'warn', kind:'note', inspector:who};
   if(btn) btn.disabled=true;
-  const wasCloud = addCloudLog(entry, ()=>{ el.value=txt; }); // 실패 시 입력값 복구
-  if(!wasCloud){ d.logs.unshift(entry); saveDB(); renderLogs(d); }
-  else { el.value=''; }
-  if(wasCloud) toast('특이사항을 기록했습니다. 잘못 입력했다면 이력 목록 맨 위 ✕에서 삭제할 수 있어요.','ok',4000);
-  else toast('특이사항을 기록했습니다.');
-  if(btn) setTimeout(()=>{ btn.disabled=false; },1500);
+
+  const finish=(noteId)=>{
+    if(resTxt && noteId) addResolutionEntry(noteId, resTxt, who);
+    el.value=''; if(resEl) resEl.value='';
+    if(btn) setTimeout(()=>{ btn.disabled=false; },1500);
+  };
+
+  const wasCloud = addCloudLog(entry, ()=>{ el.value=txt; if(btn) btn.disabled=false; }, finish);
+  if(!wasCloud){
+    entry.id = uid('log');
+    d.logs.unshift(entry); saveDB(); renderLogs(d);
+    finish(entry.id);
+  }
+  toast(wasCloud ? '특이사항을 기록했습니다. 잘못 입력했다면 이력 목록 맨 위 ✕에서 삭제할 수 있어요.' : '특이사항을 기록했습니다.', 'ok', wasCloud?4000:2600);
+}
+
+/* ---- 조치결과 등록 — 특이사항(refId)에 이어 붙는 별도 이력.
+   원본 특이사항을 고치지 않고 새 이력으로 남겨, 감사 기록의 수정 불가 원칙을 지킨다. ---- */
+function addResolutionEntry(refId, text, who){
+  who = who || inspectorName();
+  const entry={t:text, d:stamp(), tone:'ok', kind:'resolution', refId, inspector:who};
+  const wasCloud = addCloudLog(entry, ()=>{ toast('조치결과 저장에 실패했습니다. 다시 시도해 주세요.','warn',4000); });
+  if(!wasCloud){
+    entry.id = uid('log');
+    const d=equipmentData[currentKey]; if(!d) return;
+    d.logs.unshift(entry); saveDB(); renderLogs(d);
+  }
+}
+
+function openResolutionModal(noteId){
+  const d=equipmentData[currentKey];
+  const note=d&&(d.logs||[]).find(l=>l.id===noteId);
+  if(!note) return toast('해당 특이사항을 찾을 수 없습니다.','warn');
+  const existing=(d.logs||[]).find(x=>x.kind==='resolution' && x.refId===noteId);
+
+  if(existing){
+    openModal('조치결과', `
+      <p style="margin:0 0 12px;font-size:12.5px;color:var(--fg-3);line-height:1.6">
+        <b style="color:var(--fg)">${esc(note.t)}</b></p>
+      <p style="margin:0;font-size:13.5px;color:var(--fg-2);line-height:1.7;white-space:pre-line">${esc(existing.t)}</p>
+      <p style="margin:8px 0 0;font-size:11.5px;color:var(--fg-4)">${esc(existing.d)}${existing.inspector?' · '+esc(existing.inspector):''}</p>`,
+      `<button class="btn btn--primary" onclick="closeModal()">닫기</button>`);
+    return;
+  }
+
+  if(!requireInspector(()=>openResolutionModal(noteId))) return;
+  window.__resolutionNoteId = noteId;
+  openModal('조치결과 입력', `
+    <p style="margin:0 0 12px;font-size:12.5px;color:var(--fg-3);line-height:1.6">
+      <b style="color:var(--fg)">${esc(note.t)}</b><br>위 특이사항에 대한 조치결과를 적어 주세요.</p>
+    <div class="fld"><textarea id="resolutionInput" class="noteta" placeholder="예: 필터 교체 후 정상 작동 확인"></textarea></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--primary" id="resolutionGo" onclick="submitResolutionModal()">등록</button>`);
+  setTimeout(()=>{ const el=document.getElementById('resolutionInput'); if(el) el.focus(); },60);
+}
+function submitResolutionModal(){
+  const btn=document.getElementById('resolutionGo');
+  if(btn && btn.disabled) return;
+  const txt=val('resolutionInput');
+  if(!txt) return toast('조치결과를 입력해 주세요.','warn');
+  const noteId=window.__resolutionNoteId; window.__resolutionNoteId=null;
+  if(btn) btn.disabled=true;
+  addResolutionEntry(noteId, txt);
+  closeModal();
+  toast('조치결과를 등록했습니다.');
 }
 
 function selectEquipment(key){
   if(!equipmentData[key] || key===currentKey) return;
-  currentKey = key; logsExpanded=false;
+  currentKey = key; logsExpanded=false; logFilter='all';
   document.querySelectorAll('.seg').forEach(b=>{
     const on = b.dataset.key===key;
     b.setAttribute('aria-selected', on);
@@ -3832,10 +3964,12 @@ function calculateDashboardStats(siteId){
   };
 }
 
-function openDashboard(siteId){
+function openDashboard(siteId, eqKey){
   if(!requireAdmin()) return;
   const s = calculateDashboardStats(siteId);
   const scopeSite = siteId ? getSite(siteId) : null;
+  /* 설비 상세의 "저장" 버튼으로 들어온 경우 — 그 설비를 바로 내려받을 수 있게 자료 목록 맨 위에 얹는다 */
+  const scopeEq = (scopeSite && eqKey && scopeSite.equipment) ? scopeSite.equipment[eqKey] : null;
   const th='padding:8px;text-align:left;font-weight:700';
   const thR='padding:8px;text-align:right;font-weight:700';
   const td='padding:8px';
@@ -3909,6 +4043,15 @@ function openDashboard(siteId){
     <div style="border-top:1px solid var(--surface-line);padding-top:16px">
       <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">엑셀 자료 받기</h4>
       <div style="display:grid;gap:8px">
+        ${scopeEq ? `
+        <button class="xls-row" onclick="exportEqLogs()">
+          <span class="card__ico">${svg(DOWNLOAD_ICON)}</span>
+          <span class="xls-row__b">
+            <span class="xls-row__t">${esc(scopeEq.short||scopeEq.title)} 저장</span>
+            <span class="xls-row__s">이 설비만 · 기간 제한 없이 전체 이력</span>
+          </span>
+          <span class="tile__chev">›</span>
+        </button>` : ''}
         ${scopeSite ? `
         <button class="xls-row" onclick="exportSiteLogs('${siteId}')">
           <span class="card__ico is-ok">${svg(DOWNLOAD_ICON)}</span>
@@ -4140,34 +4283,49 @@ function commitEqImport(groupName){
 
 /* 시설 하나의 점검 이력을 통째로 삭제 (전체 관리자 전용).
    설비 정보는 건드리지 않고 gnfm_logs 문서만 지운다. */
+/* 되돌릴 수 없는 작업이라 확인창 하나로는 부족하다고 판단해,
+   시설 이름을 정확히 입력해야만 실제로 지워지도록 한 단계 더 넣었다. */
 function clearSiteLogs(siteId){
   if(!requireSuper()) return;
   const st = getSite(siteId); if(!st) return;
+  const n = cloudOn
+    ? (CLOUD_LOGS||[]).filter(l=>l.site===siteId && l.id).length
+    : Object.values(st.equipment||{}).reduce((a,d)=>a+((d.logs||[]).length),0);
+  if(!n) return toast('삭제할 점검 이력이 없습니다.','warn');
+
+  openModal('점검 이력 전체 삭제', `
+    <p style="margin:0 0 12px;font-size:13.5px;color:var(--fg-2);line-height:1.7">
+      <b>${esc(st.name)}</b>의 점검 이력 <b style="color:var(--danger-fg)">${n}건</b>을 모두 삭제합니다.<br>
+      <b style="color:var(--danger-fg)">되돌릴 수 없습니다.</b> 설비 정보는 지워지지 않습니다.</p>
+    <div class="fld"><label>계속하려면 시설 이름을 정확히 입력하세요 — <b>${esc(st.name)}</b></label>
+      <input id="clearLogsConfirm" type="text" placeholder="${esc(st.name)}" autocomplete="off"></div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
+     <button class="btn btn--danger" onclick="confirmClearSiteLogs('${siteId}')">전체 삭제</button>`);
+  setTimeout(()=>{ const el=document.getElementById('clearLogsConfirm'); if(el){ el.focus();
+    el.addEventListener('keydown',e=>{ if(e.key==='Enter') confirmClearSiteLogs(siteId); }); } },60);
+}
+function confirmClearSiteLogs(siteId){
+  if(!requireSuper()) return;
+  const st = getSite(siteId); if(!st) return;
+  if(val('clearLogsConfirm') !== st.name) return toast('시설 이름이 정확히 일치하지 않습니다.','warn');
 
   if(!cloudOn){
     const n = Object.values(st.equipment||{}).reduce((a,d)=>a+((d.logs||[]).length),0);
-    if(!n) return toast('삭제할 점검 이력이 없습니다.','warn');
-    askConfirm(`"${st.name}"의 점검 이력 ${n}건을 이 기기에서 삭제할까요? 되돌릴 수 없습니다.`, ()=>{
-      Object.values(st.equipment||{}).forEach(d=>{ d.logs=[]; });
-      saveDB(); closeModal(); cloudRefresh();
-      toast(`점검 이력 ${n}건을 삭제했습니다.`,'warn',4000);
-    }, '전체 삭제');
+    Object.values(st.equipment||{}).forEach(d=>{ d.logs=[]; });
+    saveDB(); closeModal(); cloudRefresh();
+    toast(`점검 이력 ${n}건을 삭제했습니다.`,'warn',4000);
     return;
   }
-
   const targets = (CLOUD_LOGS||[]).filter(l=>l.site===siteId && l.id);
-  if(!targets.length) return toast('삭제할 점검 이력이 없습니다.','warn');
-
-  askConfirm(`"${st.name}"의 점검 이력 ${targets.length}건을 모두 삭제할까요? 되돌릴 수 없습니다.`, ()=>{
-    Promise.all(targets.map(l=>
-      FB.deleteDoc(FB.doc(FB.db,'gnfm_logs',l.id)).then(()=>true).catch(e=>{ console.warn(e); return false; })
-    )).then(res=>{
-      const failed = res.filter(x=>!x).length;
-      closeModal();
-      if(failed) toast(`${targets.length-failed}건 삭제, ${failed}건 실패 — 연결 확인 후 다시 시도해 주세요.`,'warn',5000);
-      else toast(`점검 이력 ${targets.length}건을 삭제했습니다.`,'warn',4000);
-    });
-  }, '전체 삭제');
+  if(!targets.length){ closeModal(); return toast('삭제할 점검 이력이 없습니다.','warn'); }
+  Promise.all(targets.map(l=>
+    FB.deleteDoc(FB.doc(FB.db,'gnfm_logs',l.id)).then(()=>true).catch(e=>{ console.warn(e); return false; })
+  )).then(res=>{
+    const failed = res.filter(x=>!x).length;
+    closeModal();
+    if(failed) toast(`${targets.length-failed}건 삭제, ${failed}건 실패 — 연결 확인 후 다시 시도해 주세요.`,'warn',5000);
+    else toast(`점검 이력 ${targets.length}건을 삭제했습니다.`,'warn',4000);
+  });
 }
 
 /* 기간별 점검 리포트 — days 일 이내의 기록을 엑셀로. siteId를 주면 그 시설만 */
