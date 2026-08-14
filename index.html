@@ -2563,6 +2563,75 @@ function deleteInspectorCode(code){
   });
 }
 
+/* ============================================================
+   관리자 피드백 메모 — 사업장 관리자가 총괄관리자에게 남기는 비공개 메모.
+   작성자 본인과 총괄관리자(super)만 볼 수 있다. 다른 사업장 관리자끼리는 서로 못 본다.
+   ============================================================ */
+function myScopeLabel(){
+  if(isSuper()) return '전체 관리자';
+  const names = (mySites||[]).map(id=>{ const s=getSite(id); return s?s.name:null; }).filter(Boolean);
+  return names.length ? names.join(', ') : '담당 시설 없음';
+}
+
+function openFeedback(){
+  if(!requireAdmin()) return;
+  if(!authOn()) return toast('로그인 상태에서만 이용할 수 있습니다.','warn');
+  const su = isSuper();
+  const myEmail = ((FB.auth.currentUser&&FB.auth.currentUser.email)||'').toLowerCase();
+
+  const query = su
+    ? FB.getDocs(FB.collection(FB.db,'gnfm_feedback'))
+    : FB.getDocs(FB.query(FB.collection(FB.db,'gnfm_feedback'), FB.where('email','==',myEmail)));
+
+  query.then(snap=>{
+    const items = snap.docs.map(d=>Object.assign({id:d.id}, d.data())).sort((a,b)=>(b.ts||0)-(a.ts||0));
+    renderFeedback(items, su);
+  }).catch(e=>{ console.warn(e); toast('불러오지 못했습니다.','warn'); renderFeedback([], su); });
+}
+
+function renderFeedback(items, su){
+  const rows = items.map(it=>`
+    <div style="padding:10px 0;border-bottom:1px solid var(--surface-line)">
+      ${su?`<div style="font-size:12px;font-weight:800;color:var(--fg)">${esc(it.name||it.email)} <span style="font-weight:600;color:var(--fg-4)">· ${esc(it.scope||'')}</span></div>`:''}
+      <div style="font-size:13px;color:var(--fg-2);line-height:1.6;white-space:pre-line;margin-top:2px">${esc(it.text)}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-top:4px">
+        <span style="font-size:11px;color:var(--fg-4)">${esc(it.d||'')}</span>
+        <button class="btn btn--ghost" style="width:auto;flex:none;padding:3px 9px;font-size:11px" onclick="deleteFeedback('${it.id}')">삭제</button>
+      </div>
+    </div>`).join('');
+
+  openModal(su?'피드백함':'총괄관리자에게 메모 남기기', `
+    <div class="fld"><label>${su?'새 메모':'건의사항 · 불편한 점'}</label>
+      <textarea id="feedbackInput" class="noteta" placeholder="자유롭게 적어 주세요. 작성자 본인과 총괄관리자만 볼 수 있습니다."></textarea></div>
+    <button class="btn btn--primary" id="feedbackGo" style="width:100%;margin-bottom:14px" onclick="submitFeedback(${su})">등록</button>
+    <div style="border-top:1px solid var(--surface-line);padding-top:4px">
+      <h4 style="margin:8px 0 2px;font-size:12.5px;font-weight:800;color:var(--fg-3)">${su?`전체 메모 ${items.length}건`:`내가 남긴 메모 ${items.length}건`}</h4>
+      ${rows || `<p style="font-size:12.5px;color:var(--fg-4);margin:8px 0">아직 남긴 메모가 없습니다.</p>`}
+    </div>`,
+    `<button class="btn btn--ghost" onclick="closeModal()">닫기</button>`);
+}
+
+function submitFeedback(su){
+  const btn=document.getElementById('feedbackGo');
+  if(btn && btn.disabled) return;
+  const txt=val('feedbackInput');
+  if(!txt) return toast('내용을 입력해 주세요.','warn');
+  const email=((FB.auth.currentUser&&FB.auth.currentUser.email)||'').toLowerCase();
+  if(btn) btn.disabled=true;
+  FB.addDoc(FB.collection(FB.db,'gnfm_feedback'),
+    {email, name:email, scope:myScopeLabel(), text:txt, d:stamp(), ts:Date.now()})
+    .then(()=>{ toast('메모를 남겼습니다.'); openFeedback(); })
+    .catch(e=>{ console.warn(e); toast('저장에 실패했습니다.','warn'); if(btn) btn.disabled=false; });
+}
+
+function deleteFeedback(id){
+  askConfirm('이 메모를 삭제할까요?', ()=>{
+    FB.deleteDoc(FB.doc(FB.db,'gnfm_feedback',id))
+      .then(()=>{ toast('삭제했습니다.','warn'); openFeedback(); })
+      .catch(e=>{ console.warn(e); toast('삭제에 실패했습니다.','warn'); });
+  });
+}
+
 /* 기기에서 점검자 등록 해제 (다른 사람에게 넘길 때) */
 function clearInspector(){
   askConfirm('이 기기의 점검자 등록을 해제할까요? 다음 점검 때 코드를 다시 입력해야 합니다.', ()=>{
@@ -3117,6 +3186,9 @@ function openSettings(){
     <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
       <button class="btn btn--ghost" style="width:100%" onclick="openInspectorCodes()">${svg(LOCK_ICON)} 점검자 코드 관리</button>
       <span class="hint">코드를 받은 사람만 점검 결과를 제출할 수 있습니다.</span></div>
+    ${authOn()?`<div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
+      <button class="btn btn--ghost" style="width:100%" onclick="openFeedback()">${svg(I.send)} ${su?'피드백함':'총괄관리자에게 메모 남기기'}</button>
+      <span class="hint">${su?'사업장 관리자들이 남긴 메모를 확인합니다. 작성자 본인과 나만 볼 수 있습니다.':'건의사항이나 불편한 점을 남기면 총괄관리자만 볼 수 있습니다.'}</span></div>`:''}
     ${su&&authOn()?`<div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
       <button class="btn btn--ghost" style="width:100%" onclick="openAdminUsers()">${svg(GEAR_ICON)} 관리자 계정 관리</button>
       <span class="hint">전체 관리자 / 사업장 관리자를 추가하고 담당 시설을 지정합니다.</span></div>`:''}`,
