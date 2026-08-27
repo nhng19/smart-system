@@ -2191,7 +2191,8 @@ function applyCloudLogs(){
   CLOUD_LOGS.forEach(l=>{
     const st=getSite(l.site); if(!st) return;
     const d=st.equipment&&st.equipment[l.eq]; if(!d) return;
-    d.logs.push({id:l.id, t:l.t, d:l.d, tone:l.tone||'ok', kind:l.kind||'', ts:l.ts||0, refId:l.refId||null, inspector:l.inspector||''});
+    d.logs.push({id:l.id, t:l.t, d:l.d, tone:l.tone||'ok', kind:l.kind||'', ts:l.ts||0, refId:l.refId||null, inspector:l.inspector||'',
+      budgetStatus:l.budgetStatus||null, budgetAmount:l.budgetAmount||0});
   });
   DB.sites.forEach(st=>Object.values(st.equipment||{}).forEach(d=>{
     d.logs.sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -2311,9 +2312,11 @@ function cloudStart(){
 
 function addCloudLog(entry, onFail, onSuccess){
   if(!cloudOn) return false;
-  FB.addDoc(FB.collection(FB.db,'gnfm_logs'),
-    {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone,
-     kind:entry.kind||'note', inspector:entry.inspector||'', refId:entry.refId||null, ts:Date.now()})
+  const doc = {site:currentSite, eq:currentKey, t:entry.t, d:entry.d, tone:entry.tone,
+     kind:entry.kind||'note', inspector:entry.inspector||'', refId:entry.refId||null, ts:Date.now()};
+  /* 예산 반영 항목(조치결과에서만) — 있을 때만 필드를 넣는다. 사업장별 예산 집계에 쓰인다. */
+  if(entry.budgetStatus){ doc.budgetStatus = entry.budgetStatus; doc.budgetAmount = entry.budgetAmount||0; }
+  FB.addDoc(FB.collection(FB.db,'gnfm_logs'), doc)
     .then(ref=>{ if(onSuccess) onSuccess(ref.id); })
     .catch(e=>{ console.warn(e); toast('기록 저장에 실패했습니다. 입력한 내용을 복구했어요 — 다시 시도해 주세요.','warn',4000); if(onFail) onFail(); });
   return true;
@@ -3473,9 +3476,10 @@ function submitNote(){
 
 /* ---- 조치결과 등록 — 특이사항(refId)에 이어 붙는 별도 이력.
    원본 특이사항을 고치지 않고 새 이력으로 남겨, 감사 기록의 수정 불가 원칙을 지킨다. ---- */
-function addResolutionEntry(refId, text, who){
+function addResolutionEntry(refId, text, who, budget){
   who = who || inspectorName();
   const entry={t:text, d:stamp(), tone:'ok', kind:'resolution', refId, inspector:who};
+  if(budget){ entry.budgetStatus = budget.budgetStatus; entry.budgetAmount = budget.budgetAmount||0; }
   const wasCloud = addCloudLog(entry, ()=>{ toast('조치결과 저장에 실패했습니다. 다시 시도해 주세요.','warn',4000); });
   if(!wasCloud){
     entry.id = uid('log');
@@ -3516,8 +3520,11 @@ function openResolutionModal(noteId){
       </select>
       <span class="hint">수선이 아니라 예산이 필요한 개선·교체 사항일 때만 선택하세요.</span></div>
     <div class="fld" id="resolutionBudgetNoteWrap" style="display:none">
+      <label>예산 반영 금액 (만원)</label>
+      <input id="resolutionBudgetAmount" type="number" min="0" step="1" placeholder="예: 1500">
+      <span class="hint" style="margin-bottom:8px;display:block">숫자만 입력하면 사업장별 반영 현황에서 합계로 집계됩니다.</span>
       <label>예산 반영 내용</label>
-      <textarea id="resolutionBudgetNote" style="min-height:52px" placeholder="예: 노후 배관 전면 교체 · 2027년 당초예산 1,500만원 반영 요청"></textarea></div>`,
+      <textarea id="resolutionBudgetNote" style="min-height:52px" placeholder="예: 노후 배관 전면 교체 · 2027년 당초예산 반영 요청"></textarea></div>`,
     `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
      <button class="btn btn--primary" id="resolutionGo" onclick="submitResolutionModal()">등록</button>`);
   setTimeout(()=>{ const el=document.getElementById('resolutionInput'); if(el) el.focus(); },60);
@@ -3530,12 +3537,16 @@ function submitResolutionModal(){
   if(!txt) return toast('조치결과를 입력해 주세요.','warn');
   const budget = (document.getElementById('resolutionBudget')||{value:''}).value;
   const budgetNote = val('resolutionBudgetNote');
+  const amountRaw = val('resolutionBudgetAmount');
+  const amount = budget && amountRaw ? Math.max(0, Math.round(Number(amountRaw))) : 0;
+  if(budget && amountRaw && !(amount>=0)) return toast('예산 금액을 숫자로 입력해 주세요.','warn');
+
   const full = budget
-    ? `${txt}\n\n[예산 반영] ${RESOLUTION_BUDGET_LABEL[budget]}${budgetNote?' · '+budgetNote:''}`
+    ? `${txt}\n\n[예산 반영] ${RESOLUTION_BUDGET_LABEL[budget]}${amount?' · '+amount.toLocaleString()+'만원':''}${budgetNote?' · '+budgetNote:''}`
     : txt;
   const noteId=window.__resolutionNoteId; window.__resolutionNoteId=null;
   if(btn) btn.disabled=true;
-  addResolutionEntry(noteId, full);
+  addResolutionEntry(noteId, full, null, budget?{budgetStatus:budget, budgetAmount:amount}:null);
   closeModal();
   toast('조치결과를 등록했습니다.');
 }
@@ -3900,6 +3911,8 @@ function stamp(){
    점검이력 엑셀 내보내기
    ============================================================ */
 function toneLabel(t){ return t==='warn'?'주의':(t==='info'?'정보':'정상'); }
+/* 엑셀 '구분' 칸 — 조치결과가 특이사항과 뒤섞여 안 보이던 문제를 막기 위해 따로 구분해 준다 */
+function logKindLabel(log){ return log.kind==='check'?'점검완료':(log.kind==='resolution'?'조치결과':'특이사항'); }
 function safeFileName(s){ return String(s||'').replace(/[\\/:*?"<>|]/g,'_').trim() || '파일'; }
 
 /* ---- 리포트 서식 (xlsx-js-style) ----
@@ -3974,12 +3987,12 @@ function exportEqLogs(){
   const st=getSite(currentSite);
   const logs=(d.logs||[]).slice();
   if(!logs.length) return toast('내보낼 점검 이력이 없습니다.','warn');
-  const headers=['날짜','내용','상태'];
-  const rows=logs.map(l=>[l.d||'', l.t||'', toneLabel(l.tone)]);
+  const headers=['날짜','구분','내용','상태'];
+  const rows=logs.map(l=>[l.d||'', logKindLabel(l), l.t||'', toneLabel(l.tone)]);
   const ws=buildStyledSheet(
     `${d.short||d.title} · 점검 이력`,
     `${st?st.name:''} · 총 ${rows.length}건 · 생성일 ${stamp()}`,
-    headers, rows, [18,56,8], 2, 1);
+    headers, rows, [18,10,52,8], 3, 2);
   const wb=XLSXStyle.utils.book_new();
   XLSXStyle.utils.book_append_sheet(wb, ws, safeFileName(d.short||d.title).slice(0,28));
   XLSXStyle.writeFile(wb, `${safeFileName(st&&st.name)}_${safeFileName(d.short||d.title)}_점검이력.xlsx`);
@@ -3990,16 +4003,16 @@ function exportSiteLogs(siteId){
   const st=getSite(siteId||currentSite); if(!st) return;
   const rows=[];
   Object.values(st.equipment||{}).forEach(d=>{
-    (d.logs||[]).forEach(l=>{ rows.push({설비명:d.short||d.title, 날짜:l.d||'', 내용:l.t||'', 상태:toneLabel(l.tone)}); });
+    (d.logs||[]).forEach(l=>{ rows.push({설비명:d.short||d.title, 날짜:l.d||'', 구분:logKindLabel(l), 내용:l.t||'', 상태:toneLabel(l.tone)}); });
   });
   if(!rows.length) return toast('내보낼 점검 이력이 없습니다.','warn');
   rows.sort((a,b)=> a.설비명===b.설비명 ? (a.날짜<b.날짜?1:-1) : (a.설비명>b.설비명?1:-1));
-  const headers=['설비명','날짜','내용','상태'];
-  const aoaRows=rows.map(r=>[r.설비명, r.날짜, r.내용, r.상태]);
+  const headers=['설비명','날짜','구분','내용','상태'];
+  const aoaRows=rows.map(r=>[r.설비명, r.날짜, r.구분, r.내용, r.상태]);
   const ws=buildStyledSheet(
     `${st.name} · 전체 점검 이력`,
     `총 ${rows.length}건 · 생성일 ${stamp()}`,
-    headers, aoaRows, [16,18,56,8], 3, 2);
+    headers, aoaRows, [16,18,10,46,8], 4, 3);
   const wb=XLSXStyle.utils.book_new();
   XLSXStyle.utils.book_append_sheet(wb, ws, '점검이력');
   XLSXStyle.writeFile(wb, `${safeFileName(st.name)}_전체_점검이력.xlsx`);
@@ -4058,9 +4071,40 @@ function calculateDashboardStats(siteId){
   };
 }
 
+/* 예산 반영 내역 집계 — 조치결과에 기입된 예산 정보만 모은다.
+   siteId를 주면 그 시설의 항목별 목록을, 안 주면 전체 시설별 합계를 준다. */
+function calculateBudgetStats(siteId){
+  const items = [];
+  (CLOUD_LOGS||[]).forEach(log=>{
+    if(log.kind!=='resolution' || !log.budgetStatus) return;
+    if(siteId && log.site!==siteId) return;
+    const site = DB.sites.find(s=>s.id===log.site);
+    const eq = site && site.equipment ? site.equipment[log.eq] : null;
+    items.push({
+      siteId: log.site, site: site?site.name:'(삭제된 시설)',
+      eqKey: log.eq, eq: eq?(eq.short||eq.title):'(삭제된 설비)',
+      d: log.d||'', status: log.budgetStatus, amount: log.budgetAmount||0,
+      note: (log.t||'').split('\n')[0]
+    });
+  });
+  items.sort((a,b)=> (b.d||'').localeCompare(a.d||''));
+  const total = items.reduce((a,x)=>a+x.amount,0);
+
+  if(siteId) return {items, total};
+
+  const bySite = {};
+  items.forEach(it=>{
+    const k = it.siteId;
+    if(!bySite[k]) bySite[k] = {id:k, name:it.site, count:0, total:0};
+    bySite[k].count++; bySite[k].total += it.amount;
+  });
+  return {items, total, sitesBudget: Object.values(bySite).sort((a,b)=>b.total-a.total)};
+}
+
 function openDashboard(siteId, eqKey){
   if(!requireAdmin()) return;
   const s = calculateDashboardStats(siteId);
+  const b = calculateBudgetStats(siteId);
   const scopeSite = siteId ? getSite(siteId) : null;
   /* 설비 상세의 "저장" 버튼으로 들어온 경우 — 그 설비를 바로 내려받을 수 있게 자료 목록 맨 위에 얹는다 */
   const scopeEq = (scopeSite && eqKey && scopeSite.equipment) ? scopeSite.equipment[eqKey] : null;
@@ -4123,6 +4167,36 @@ function openDashboard(siteId, eqKey){
         </tbody>
       </table>
     </div>`}
+
+    ${b.items.length ? `
+    <div style="margin-bottom:22px">
+      <h4 style="margin:0 0 4px;font-size:13.5px;font-weight:800">예산 반영 현황</h4>
+      <p style="margin:0 0 10px;font-size:12px;color:var(--fg-4)">조치결과에 기입된 예산 반영 내용 합계 · 총 <b>${b.total.toLocaleString()}만원</b> (${b.items.length}건)</p>
+      ${scopeSite ? `
+      <div style="max-height:240px;overflow-y:auto;border:1px solid var(--surface-line);border-radius:var(--r-sm)">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead><tr style="background:var(--bg-sunken)"><th style="${th}">설비</th><th style="${th}">날짜</th><th style="${th}">상태</th><th style="${thR}">금액</th></tr></thead>
+          <tbody>
+            ${b.items.map(it=>`<tr style="border-top:1px solid var(--surface-line);cursor:pointer" onclick="closeModal();enterSite('${it.siteId}');openEquipment('${it.eqKey}')" title="${esc(it.note)}">
+              <td style="${td}">${esc(it.eq)}</td>
+              <td style="${td}">${esc(it.d)}</td>
+              <td style="${td}">${RESOLUTION_BUDGET_LABEL[it.status]||it.status}</td>
+              <td style="${tdR}">${it.amount?it.amount.toLocaleString()+'만원':'-'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>` : `
+      <table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead><tr style="background:var(--bg-sunken)"><th style="${th}">시설명</th><th style="${thR}">건수</th><th style="${thR}">합계</th></tr></thead>
+        <tbody>
+          ${b.sitesBudget.map(st=>`<tr style="border-top:1px solid var(--surface-line);cursor:pointer" onclick="closeModal();openDashboard('${st.id}')">
+            <td style="${td}">${esc(st.name)}</td>
+            <td style="${tdR}">${st.count}</td>
+            <td style="${tdR};font-weight:700">${st.total.toLocaleString()}만원</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>` : ''}
 
     ${scopeSite && isSuper() ? `
     <div style="border-top:1px solid var(--surface-line);padding-top:16px;margin-bottom:22px">
@@ -4440,7 +4514,7 @@ function generatePeriodReport(days, label, siteId){
       log.d||'',
       site?site.name:'(삭제된 시설)',
       eq?(eq.short||eq.title):'(삭제된 설비)',
-      log.kind==='check'?'점검완료':'특이사항',
+      logKindLabel(log),
       log.t||'',
       toneLabel(log.tone),
       logInspector(log)
