@@ -3505,19 +3505,37 @@ function openResolutionModal(noteId){
   openModal('조치결과 입력', `
     <p style="margin:0 0 12px;font-size:12.5px;color:var(--fg-3);line-height:1.6">
       <b style="color:var(--fg)">${esc(note.t)}</b><br>위 특이사항에 대한 조치결과를 적어 주세요.</p>
-    <div class="fld"><textarea id="resolutionInput" class="noteta" placeholder="예: 필터 교체 후 정상 작동 확인"></textarea></div>`,
+    <div class="fld"><textarea id="resolutionInput" class="noteta" placeholder="예: 필터 교체 후 정상 작동 확인"></textarea></div>
+    <div class="fld" style="border-top:1px solid var(--surface-line);padding-top:14px">
+      <label>예산 반영 여부 (해당 시에만)</label>
+      <select id="resolutionBudget" onchange="document.getElementById('resolutionBudgetNoteWrap').style.display=this.value?'block':'none'">
+        <option value="">해당 없음</option>
+        <option value="review">반영 검토 중</option>
+        <option value="planned">차년도 예산에 반영</option>
+        <option value="rejected">미반영</option>
+      </select>
+      <span class="hint">수선이 아니라 예산이 필요한 개선·교체 사항일 때만 선택하세요.</span></div>
+    <div class="fld" id="resolutionBudgetNoteWrap" style="display:none">
+      <label>예산 반영 내용</label>
+      <textarea id="resolutionBudgetNote" style="min-height:52px" placeholder="예: 노후 배관 전면 교체 · 2027년 당초예산 1,500만원 반영 요청"></textarea></div>`,
     `<button class="btn btn--ghost" onclick="closeModal()">취소</button>
      <button class="btn btn--primary" id="resolutionGo" onclick="submitResolutionModal()">등록</button>`);
   setTimeout(()=>{ const el=document.getElementById('resolutionInput'); if(el) el.focus(); },60);
 }
+const RESOLUTION_BUDGET_LABEL = {review:'반영 검토 중', planned:'차년도 예산 반영', rejected:'미반영'};
 function submitResolutionModal(){
   const btn=document.getElementById('resolutionGo');
   if(btn && btn.disabled) return;
   const txt=val('resolutionInput');
   if(!txt) return toast('조치결과를 입력해 주세요.','warn');
+  const budget = (document.getElementById('resolutionBudget')||{value:''}).value;
+  const budgetNote = val('resolutionBudgetNote');
+  const full = budget
+    ? `${txt}\n\n[예산 반영] ${RESOLUTION_BUDGET_LABEL[budget]}${budgetNote?' · '+budgetNote:''}`
+    : txt;
   const noteId=window.__resolutionNoteId; window.__resolutionNoteId=null;
   if(btn) btn.disabled=true;
-  addResolutionEntry(noteId, txt);
+  addResolutionEntry(noteId, full);
   closeModal();
   toast('조치결과를 등록했습니다.');
 }
@@ -3598,31 +3616,35 @@ function updateProgress(){
   document.getElementById('progT').textContent = `점검 항목 ${done} / ${boxes.length} 완료`;
 }
 
+/* 전체 항목을 다 확인해야만 저장되던 방식이 "여건상 확인이 어려운 항목이 있으면
+   아예 저장을 못 하는" 문제로 이어진다는 피드백을 반영. 일부 항목만 체크해도 저장을
+   허용하고, 체크 안 한 항목은 "미점검"으로 이력에 그대로 남긴다. */
 function submitChecklist(){
   const submitBtn=document.getElementById('submitBtn');
   if(submitBtn && submitBtn.disabled) return; // 이미 처리 중 - 중복 클릭 방지
   const boxes=[...document.querySelectorAll('[data-check]')];
+  const checked=boxes.filter(b=>b.checked);
   const missing=boxes.filter(b=>!b.checked);
   boxes.forEach(b=>b.closest('.check').classList.remove('is-missing'));
-  if(missing.length){
+
+  if(!checked.length){
     missing.forEach(b=>b.closest('.check').classList.add('is-missing'));
-    const firstText=missing[0].closest('.check').querySelector('.check__t').textContent;
-    const msg = missing.length===1
-      ? `미완료 항목: ${firstText}`
-      : `미완료 항목 ${missing.length}건 (예: ${firstText} 외)`;
-    toast(msg,'warn');
-    missing[0].closest('.check').scrollIntoView({behavior:'smooth',block:'center'});
+    toast('점검한 항목이 없습니다. 최소 한 항목은 확인 후 저장할 수 있습니다.','warn');
     return;
   }
   if(!requireInspector(()=>submitChecklist())) return;
   if(submitBtn) submitBtn.disabled=true;
   const d=equipmentData[currentKey];
   const who=inspectorName();
-  const entry={t:`현장 점검 완료 · ${who} 제출`,d:stamp(),tone:'ok',kind:'check',inspector:who};
-  const wasCloud = addCloudLog(entry, ()=>{ boxes.forEach(b=>b.checked=true); updateProgress(); });
+  const partial = missing.length>0;
+  const missingLabels = missing.map(b=>b.closest('.check').querySelector('.check__t').textContent.trim());
+  const summary = `현장 점검 완료 (${checked.length}/${boxes.length}) · ${who} 제출`
+    + (partial ? `\n미점검 항목: ${missingLabels.join(', ')}` : '');
+  const entry={t:summary, d:stamp(), tone:partial?'warn':'ok', kind:'check', inspector:who};
+  const wasCloud = addCloudLog(entry, ()=>{ boxes.forEach(b=>{ b.checked = checked.includes(b); }); updateProgress(); });
   if(!wasCloud){ d.logs.unshift(entry); saveDB(); render(currentKey); }
   else { boxes.forEach(b=>b.checked=false); updateProgress(); }
-  toast('점검 결과가 기록되었습니다.');
+  toast(partial ? '점검 결과가 기록되었습니다. 미점검 항목은 이력에 남습니다.' : '점검 결과가 기록되었습니다.', 'ok', partial?4000:2600);
   if(submitBtn) setTimeout(()=>{ submitBtn.disabled=false; },1500);
 }
 
