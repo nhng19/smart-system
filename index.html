@@ -3029,6 +3029,23 @@ function render(key){
           <label>조치결과 (선택)</label>
           <textarea class="noteta" id="noteResolution" style="min-height:56px" placeholder="바로 조치했다면 결과를 함께 적어 주세요. 나중에 이력 목록에서 특이사항을 눌러 따로 등록할 수도 있습니다."></textarea>
         </div>
+        <div class="fld" style="margin-top:10px">
+          <label>예산 반영 여부 (해당 시에만)</label>
+          <select id="noteBudget" onchange="document.getElementById('noteBudgetWrap').style.display=this.value?'block':'none'">
+            <option value="">해당 없음</option>
+            <option value="review">반영 검토 중</option>
+            <option value="planned">차년도 예산에 반영</option>
+            <option value="rejected">미반영</option>
+          </select>
+          <span class="hint">수선이 아니라 예산이 필요한 개선·교체 사항일 때만 선택하세요.</span>
+        </div>
+        <div class="fld" id="noteBudgetWrap" style="display:none">
+          <label>예산 반영 금액 (만원)</label>
+          <input id="noteBudgetAmount" type="number" min="0" step="1" placeholder="예: 1500">
+          <span class="hint" style="margin-bottom:8px;display:block">숫자만 입력하면 사업장별 반영 현황에서 합계로 집계됩니다.</span>
+          <label>예산 반영 내용</label>
+          <textarea id="noteBudgetNote" style="min-height:52px" placeholder="예: 노후 배관 전면 교체 · 2027년 당초예산 반영 요청"></textarea>
+        </div>
       </div>
       <div class="card__foot">
         <button class="btn btn--primary" id="noteSubmitBtn" onclick="submitNote()">${svg(I.send)}특이사항 등록</button>
@@ -3453,6 +3470,14 @@ function submitNote(){
   if(!txt) return toast('특이사항 내용을 입력해 주세요.','warn');
   const resEl=document.getElementById('noteResolution');
   const resTxt = resEl ? resEl.value.trim() : '';
+  /* 특이사항을 적는 김에 바로 조치결과·예산 반영까지 함께 남길 수 있게 한다 —
+     나중에 따로 "조치결과" 버튼을 눌러 입력해도 되고, 여기서 한 번에 적어도 된다. */
+  let resPayload = null;
+  if(resTxt){
+    const noteBudget = (document.getElementById('noteBudget')||{value:''}).value;
+    resPayload = buildResolutionPayload(resTxt, noteBudget, val('noteBudgetAmount'), val('noteBudgetNote'));
+    if(!resPayload.valid) return toast('예산 금액을 숫자로 입력해 주세요.','warn');
+  }
   const d=equipmentData[currentKey]; if(!d) return;
   if(!requireInspector(()=>submitNote())) return;
   const who=inspectorName();
@@ -3460,8 +3485,12 @@ function submitNote(){
   if(btn) btn.disabled=true;
 
   const finish=(noteId)=>{
-    if(resTxt && noteId) addResolutionEntry(noteId, resTxt, who);
+    if(resPayload && noteId) addResolutionEntry(noteId, resPayload.full, who, resPayload.budget);
     el.value=''; if(resEl) resEl.value='';
+    const bSel=document.getElementById('noteBudget'); if(bSel) bSel.value='';
+    const bAmt=document.getElementById('noteBudgetAmount'); if(bAmt) bAmt.value='';
+    const bNote=document.getElementById('noteBudgetNote'); if(bNote) bNote.value='';
+    const bWrap=document.getElementById('noteBudgetWrap'); if(bWrap) bWrap.style.display='none';
     if(btn) setTimeout(()=>{ btn.disabled=false; },1500);
   };
 
@@ -3530,23 +3559,28 @@ function openResolutionModal(noteId){
   setTimeout(()=>{ const el=document.getElementById('resolutionInput'); if(el) el.focus(); },60);
 }
 const RESOLUTION_BUDGET_LABEL = {review:'반영 검토 중', planned:'차년도 예산 반영', rejected:'미반영'};
+/* 조치결과 텍스트 + 예산 정보를 하나로 합친다 — 특이사항 폼의 "바로 조치" 칸과
+   조치결과 입력 모달이 같은 규칙을 쓰도록 공용 함수로 뺐다. */
+function buildResolutionPayload(txt, budget, amountRaw, budgetNote){
+  const amount = budget && amountRaw ? Math.max(0, Math.round(Number(amountRaw))) : 0;
+  const valid = !(budget && amountRaw && !(amount>=0));
+  const full = budget
+    ? `${txt}\n\n[예산 반영] ${RESOLUTION_BUDGET_LABEL[budget]}${amount?' · '+amount.toLocaleString()+'만원':''}${budgetNote?' · '+budgetNote:''}`
+    : txt;
+  return {full, valid, budget: budget?{budgetStatus:budget, budgetAmount:amount}:null};
+}
 function submitResolutionModal(){
   const btn=document.getElementById('resolutionGo');
   if(btn && btn.disabled) return;
   const txt=val('resolutionInput');
   if(!txt) return toast('조치결과를 입력해 주세요.','warn');
   const budget = (document.getElementById('resolutionBudget')||{value:''}).value;
-  const budgetNote = val('resolutionBudgetNote');
-  const amountRaw = val('resolutionBudgetAmount');
-  const amount = budget && amountRaw ? Math.max(0, Math.round(Number(amountRaw))) : 0;
-  if(budget && amountRaw && !(amount>=0)) return toast('예산 금액을 숫자로 입력해 주세요.','warn');
+  const p = buildResolutionPayload(txt, budget, val('resolutionBudgetAmount'), val('resolutionBudgetNote'));
+  if(!p.valid) return toast('예산 금액을 숫자로 입력해 주세요.','warn');
 
-  const full = budget
-    ? `${txt}\n\n[예산 반영] ${RESOLUTION_BUDGET_LABEL[budget]}${amount?' · '+amount.toLocaleString()+'만원':''}${budgetNote?' · '+budgetNote:''}`
-    : txt;
   const noteId=window.__resolutionNoteId; window.__resolutionNoteId=null;
   if(btn) btn.disabled=true;
-  addResolutionEntry(noteId, full, null, budget?{budgetStatus:budget, budgetAmount:amount}:null);
+  addResolutionEntry(noteId, p.full, null, p.budget);
   closeModal();
   toast('조치결과를 등록했습니다.');
 }
@@ -4044,7 +4078,7 @@ function eqStatus(eq){
 /* siteId를 주면 그 시설만, 안 주면 전체를 집계한다 */
 function calculateDashboardStats(siteId){
   let totalEq=0, okEq=0, overdueEq=0, dueEq=0, noneEq=0, nocycleEq=0;
-  const sitesStats=[], alerts=[];
+  const sitesStats=[], alerts=[], noteAlerts=[];
   const targets = siteId ? DB.sites.filter(s=>s.id===siteId) : DB.sites;
 
   targets.forEach(st=>{
@@ -4059,13 +4093,22 @@ function calculateDashboardStats(siteId){
       else if(s==='due'){ dueEq++; sNone++; alerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title, status:'오늘점검', label:'D-DAY'}); }
       else if(s==='none'){ noneEq++; sNone++; alerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title, status:'미점검', label:'-'}); }
       else nocycleEq++;
+
+      /* 조치결과(refId)가 안 달린 특이사항이 남아있는 설비 — 점검 주기와 상관없이 따로 모아 보여준다.
+         점검 주기는 지켜도(정상) 특이사항이 묻혀 있을 수 있어서다. */
+      const logs = eq.logs||[];
+      const resolvedIds = new Set(logs.filter(l=>l.kind==='resolution' && l.refId).map(l=>l.refId));
+      const openNotes = logs.filter(l=>l.kind==='note' && !resolvedIds.has(l.id));
+      if(openNotes.length){
+        noteAlerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title, count:openNotes.length, latest:openNotes[0].t, d:openNotes[0].d});
+      }
     });
     if(eqs.length) sitesStats.push({id:st.id, name:st.name, total:eqs.length, ok:sOk, overdue:sOverdue, none:sNone});
   });
 
   const managed = okEq + overdueEq + dueEq + noneEq;
   return {
-    totalEq, okEq, overdueEq, dueEq, noneEq, nocycleEq, alerts,
+    totalEq, okEq, overdueEq, dueEq, noneEq, nocycleEq, alerts, noteAlerts,
     checkRate: managed>0 ? Math.round(okEq/managed*100) : 0,
     sitesStats
   };
@@ -4116,7 +4159,7 @@ function openDashboard(siteId, eqKey){
   const arg = siteId ? `,'${siteId}'` : '';   /* 리포트 함수에 넘길 시설 인자 */
 
   const html = `
-    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:22px">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px">
       <div style="background:var(--brand-50);padding:16px;border-radius:var(--r-md);text-align:center">
         <div style="font-size:28px;font-weight:800;color:var(--brand-600)">${s.checkRate}%</div>
         <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">주기 준수율</div>
@@ -4129,10 +4172,8 @@ function openDashboard(siteId, eqKey){
         <div style="font-size:28px;font-weight:800;color:var(--danger-fg)">${s.overdueEq}</div>
         <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">기한 초과</div>
       </div>
-      <div style="background:var(--warn-bg);padding:16px;border-radius:var(--r-md);text-align:center">
-        <div style="font-size:28px;font-weight:800;color:var(--warn-fg)">${s.noneEq}</div>
-        <div style="font-size:11.5px;color:var(--fg-3);margin-top:4px">미점검</div>
-      </div>
+      <!-- '미점검' 요약 타일은 뺐다 — 한 번만 점검하면 바로 빠지는 일회성 상태라 상시 지표로는 의미가 적음.
+           단, "조치 필요 설비" 목록·엑셀에는 여전히 남아 실제 미점검 설비를 놓치지 않는다. -->
     </div>
 
     <div style="margin-bottom:22px">
@@ -4152,6 +4193,25 @@ function openDashboard(siteId, eqKey){
         </table>
       </div>` : `<p style="font-size:12.5px;color:var(--fg-4);margin:4px 0">조치가 필요한 설비가 없습니다.</p>`}
     </div>
+
+    ${s.noteAlerts.length ? `
+    <div style="margin-bottom:22px">
+      <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">특이사항 발생 설비 ${s.noteAlerts.length}건
+        <span style="font-weight:600;color:var(--fg-4);font-size:11.5px">· 조치결과 미등록</span></h4>
+      <div style="max-height:220px;overflow-y:auto;border:1px solid var(--surface-line);border-radius:var(--r-sm)">
+        <table style="width:100%;font-size:12px;border-collapse:collapse">
+          <thead><tr style="background:var(--bg-sunken)">${scopeSite?'':`<th style="${th}">시설</th>`}<th style="${th}">설비</th><th style="${th}">최근 특이사항</th><th style="${thR}">건수</th></tr></thead>
+          <tbody>
+            ${s.noteAlerts.map(a=>`<tr style="border-top:1px solid var(--surface-line);cursor:pointer" onclick="closeModal();enterSite('${a.siteId}');openEquipment('${a.key}')" title="${esc(a.latest)}">
+              ${scopeSite?'':`<td style="${td}">${esc(a.site)}</td>`}
+              <td style="${td}">${esc(a.eq)}</td>
+              <td style="${td};max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-3)">${esc(a.latest)}</td>
+              <td style="${tdR};color:var(--warn-fg)">${a.count}건</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}
 
     ${scopeSite?'':`<div style="margin-bottom:22px">
       <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">시설별 현황</h4>
