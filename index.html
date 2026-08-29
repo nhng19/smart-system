@@ -4116,17 +4116,24 @@ function calculateDashboardStats(siteId){
       else if(s==='none'){ noneEq++; sNone++; alerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title, status:'미점검', label:'-'}); }
       else nocycleEq++;
 
-      /* 조치결과(refId)가 안 달린 특이사항이 남아있는 설비 — 점검 주기와 상관없이 따로 모아 보여준다.
-         점검 주기는 지켜도(정상) 특이사항이 묻혀 있을 수 있어서다. */
+      /* 특이사항이 있었던 설비 — 점검 주기와 상관없이 따로 모아 보여준다.
+         점검 주기는 지켜도(정상) 특이사항이 묻혀 있을 수 있어서다.
+         미해결(조치결과 없음)이 섞여 있으면 그쪽을 우선해서 보여준다. */
       const logs = eq.logs||[];
-      const resolvedIds = new Set(logs.filter(l=>l.kind==='resolution' && l.refId).map(l=>l.refId));
-      const openNotes = logs.filter(l=>l.kind==='note' && !resolvedIds.has(l.id));
-      if(openNotes.length){
-        noteAlerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title, count:openNotes.length, latest:openNotes[0].t, d:openNotes[0].d});
+      const notes = logs.filter(l=>l.kind==='note');
+      if(notes.length){
+        const resolvedIds = new Set(logs.filter(l=>l.kind==='resolution' && l.refId).map(l=>l.refId));
+        const openNotes = notes.filter(n=>!resolvedIds.has(n.id));
+        const open = openNotes.length;
+        const latest = (open ? openNotes : notes)[0];   /* notes/openNotes는 이미 최신순 */
+        noteAlerts.push({site:st.name, siteId:st.id, key, eq:eq.short||eq.title,
+          open, resolved: notes.length - open, latest: latest.t, d: latest.d});
       }
     });
     if(eqs.length) sitesStats.push({id:st.id, name:st.name, total:eqs.length, ok:sOk, overdue:sOverdue, none:sNone});
   });
+  /* 미해결 있는 설비를 위로, 그 안에서는 최근 특이사항 순 */
+  noteAlerts.sort((a,b)=> (b.open>0?1:0)-(a.open>0?1:0) || (b.d||'').localeCompare(a.d||''));
 
   const managed = okEq + overdueEq + dueEq + noneEq;
   return {
@@ -4219,7 +4226,7 @@ function openDashboard(siteId, eqKey){
     ${s.noteAlerts.length ? `
     <div style="margin-bottom:22px">
       <h4 style="margin:0 0 10px;font-size:13.5px;font-weight:800">특이사항 발생 설비 ${s.noteAlerts.length}건
-        <span style="font-weight:600;color:var(--fg-4);font-size:11.5px">· 조치결과 미등록</span></h4>
+        <span style="font-weight:600;color:var(--fg-4);font-size:11.5px">· 미해결 ${s.noteAlerts.filter(a=>a.open>0).length}건</span></h4>
       <div style="max-height:220px;overflow-y:auto;border:1px solid var(--surface-line);border-radius:var(--r-sm)">
         <table style="width:100%;font-size:12px;border-collapse:collapse">
           <thead><tr style="background:var(--bg-sunken)">${scopeSite?'':`<th style="${th}">시설</th>`}<th style="${th}">설비</th><th style="${th}">최근 특이사항</th><th style="${thR}">건수</th></tr></thead>
@@ -4228,7 +4235,7 @@ function openDashboard(siteId, eqKey){
               ${scopeSite?'':`<td style="${td}">${esc(a.site)}</td>`}
               <td style="${td}">${esc(a.eq)}</td>
               <td style="${td};max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg-3)">${esc(a.latest)}</td>
-              <td style="${tdR};color:var(--warn-fg)">${a.count}건</td>
+              <td style="${tdR};color:${a.open>0?'var(--warn-fg)':'var(--ok-fg)'}">${a.open>0?a.open:a.resolved}건</td>
             </tr>`).join('')}
           </tbody>
         </table>
