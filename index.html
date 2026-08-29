@@ -3071,7 +3071,24 @@ function logMatchesFilter(l, f){
   if(f==='note') return l.kind==='note' || l.kind==='resolution';
   return true;
 }
-function logItemHTML(l, i){
+/* 특이사항 밑에 그 조치결과를 붙여 준다 — 날짜순으로만 늘어놓으면
+   전혀 다른 특이사항의 조치결과가 바로 위/아래에 와서 마치 그 특이사항 답인 것처럼
+   보이는 문제가 있었다(refId로 실제 연결된 게 아니라 시간상 우연히 붙어 보인 것).
+   원본을 찾아 refId로 정확히 묶어서, 실제 짝이 아닌 건 옆에 안 오게 한다. */
+function threadLogPairs(pairs){
+  const noteIds = new Set(pairs.filter(p=>p.l.kind==='note').map(p=>p.l.id));
+  const resByRef = new Map();
+  pairs.forEach(p=>{
+    if(p.l.kind==='resolution' && p.l.refId && noteIds.has(p.l.refId)){
+      if(!resByRef.has(p.l.refId)) resByRef.set(p.l.refId, []);
+      resByRef.get(p.l.refId).push(p);
+    }
+  });
+  return pairs
+    .filter(p=> !(p.l.kind==='resolution' && p.l.refId && noteIds.has(p.l.refId)))
+    .map(p=> p.l.kind==='note' ? Object.assign({}, p, {resolutions: resByRef.get(p.l.id)||[]}) : p);
+}
+function logItemHTML(l, i, resolutions){
   const delBtn = canEditSite(currentSite)
     ? `<button class="log__del" title="이력 삭제" onclick="event.stopPropagation();deleteLog(${i})" aria-label="이력 삭제">✕</button>` : '';
 
@@ -3085,15 +3102,15 @@ function logItemHTML(l, i){
   }
 
   if(l.kind==='note' && l.id){
-    const d=equipmentData[currentKey];
-    const resolved = d && (d.logs||[]).some(x=>x.kind==='resolution' && x.refId===l.id);
+    const resolved = !!(resolutions && resolutions.length);
+    const resHtml = resolved ? resolutions.map(({l:rl,i:ri})=>logItemHTML(rl,ri)).join('') : '';
     return `<div class="log" style="cursor:pointer" onclick="openResolutionModal('${String(l.id).replace(/'/g,"\\'")}')" title="${resolved?'조치결과 보기':'조치결과 입력'}">
         <span class="log__dot ${l.tone!=='ok'?'is-'+l.tone:''}"></span>
         <div><div class="log__t">${esc(l.t)}</div><div class="log__d">${esc(l.d)}${resolved
           ?` <span style="color:var(--ok-fg);font-weight:700">· 조치완료</span>`
           :` <span style="color:var(--brand-600);font-weight:700">· 조치결과 입력</span>`}</div></div>
         ${delBtn}
-      </div>`;
+      </div>` + resHtml;
   }
 
   return `<div class="log">
@@ -3144,26 +3161,31 @@ function renderLogs(d){
     syncAdminBtn();
     return;
   }
+  /* 조치결과를 실제 원본 특이사항 밑으로 묶는다 — 날짜순 배치만으로는 옆에 있는 게
+     자기 조치결과처럼 보이는 문제가 있었다. */
+  const threaded = threadLogPairs(pairs);
+  const itemHtml = t => logItemHTML(t.l, t.i, t.resolutions);
 
   if(!logsExpanded){
-    const shown = pairs.slice(0,5);
-    box.innerHTML = chipsRow + shown.map(({l,i})=>logItemHTML(l,i)).join('')
-      + (pairs.length>5 ? `<button class="btn btn--ghost" style="width:100%;margin-top:8px" onclick="toggleLogsExpanded()">더보기 (총 ${pairs.length}건) · 연도·월별로 보기</button>` : '');
+    const shown = threaded.slice(0,5);
+    box.innerHTML = chipsRow + shown.map(itemHtml).join('')
+      + (threaded.length>5 ? `<button class="btn btn--ghost" style="width:100%;margin-top:8px" onclick="toggleLogsExpanded()">더보기 (총 ${pairs.length}건) · 연도·월별로 보기</button>` : '');
   }else{
-    const groups=new Map();  // "YYYY-MM" -> [{l,i}]
-    pairs.forEach(({l,i})=>{
-      const dt=parseLogDate(l.d);
+    const groups=new Map();  // "YYYY-MM" -> [thread, ...]
+    threaded.forEach(t=>{
+      const dt=parseLogDate(t.l.d);
       const key = dt ? `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}` : '날짜 미상';
       if(!groups.has(key)) groups.set(key,[]);
-      groups.get(key).push({l,i});
+      groups.get(key).push(t);
     });
     box.innerHTML = chipsRow
       + `<button class="btn btn--ghost" style="width:100%;margin-bottom:8px" onclick="toggleLogsExpanded()">접기</button>`
       + Array.from(groups.entries()).map(([key,items])=>{
           const label = key==='날짜 미상' ? key : `${key.slice(0,4)}년 ${+key.slice(5,7)}월`;
+          const count = items.reduce((a,t)=>a+1+(t.resolutions?t.resolutions.length:0), 0);
           return `<div class="logs__group">
-            <div class="logs__gh">${esc(label)} <span class="card__meta">${items.length}건</span></div>
-            ${items.map(({l,i})=>logItemHTML(l,i)).join('')}
+            <div class="logs__gh">${esc(label)} <span class="card__meta">${count}건</span></div>
+            ${items.map(itemHtml).join('')}
           </div>`;
         }).join('');
   }
